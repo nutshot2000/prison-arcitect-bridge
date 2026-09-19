@@ -1,0 +1,5 @@
+# Optional: otherwise discover the installation through Steam.
+# executable = 'D:\SteamLibrary\steamapps\common\Prison Architect\Prison Architect64.exe'
+output_directory = "runs"
+dry_run = true
+max_drag_seconds = 5.0

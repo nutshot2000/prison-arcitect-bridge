@@ -1,0 +1,4 @@
+include LICENSE README.md AGENTS.md pa-agent.example.toml requirements-tested.txt
+recursive-include docs *.md
+recursive-include scripts *.py
+recursive-include tests *.py
