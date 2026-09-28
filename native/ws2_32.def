@@ -1,0 +1,12 @@
+LIBRARY WS2_32.dll
+EXPORTS
+WSAStartup
+socket
+bind
+listen
+accept
+recv
+send
+closesocket
+select
+setsockopt

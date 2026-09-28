@@ -1,0 +1,3 @@
+Name            "AI Bridge Probe"
+Author          "prison-arcitect-bridge"
+Description     "Capability probe for the AI agent bridge. Test only."

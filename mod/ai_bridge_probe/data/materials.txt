@@ -1,0 +1,15 @@
+BEGIN Object
+    Name                 AiBridgeProbe
+    MoveSpeedFactor      0.500000
+    Toughness            10.0000
+    Price                -10
+    NumSlots             0
+    RenderDepth          1
+    Group                StaticObject
+    BlockedBy            Wall
+    BlockedBy            StaticObject
+    BlockedBy            UtilityStation
+    Sprite               Box
+    Properties           StaticObject
+    Properties           Scripted
+END

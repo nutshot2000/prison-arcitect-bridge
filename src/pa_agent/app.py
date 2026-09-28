@@ -44,6 +44,14 @@ def parser() -> argparse.ArgumentParser:
     key.add_argument("--duration", type=float, default=0.08)
     text = actions.add_parser("text")
     text.add_argument("text")
+    state = commands.add_parser("state", help="Parse a .prison save (read-only); default: newest save")
+    state.add_argument("save", nargs="?", type=Path)
+    state.add_argument("--full", action="store_true", help="Emit the whole save tree as JSON")
+    lua = commands.add_parser("lua", help="Run Lua inside the live game (needs pa_bridge + AI Bridge mod)")
+    lua.add_argument("code", help="Lua code; use return to get a value, or @file.lua")
+    lua.add_argument("--timeout", type=float, default=10.0)
+    commands.add_parser("bridge", help="Show live bridge status (DLL, in-game runtime, game time)")
+    commands.add_parser("mcp", help="Run the MCP server on stdio for AI agents")
     test = commands.add_parser("input-test", help="Default: move pointer to client centre, no clicks")
     test.add_argument("--key", choices=("escape", "space"), help="Optionally test one key; changes game UI/state")
     return root
@@ -74,6 +82,18 @@ def doctor(config: Config) -> dict:
     return result
 
 
+def read_state(save: Path | None, full: bool) -> dict:
+    from .state import load_prison, summarize
+    if save is None:
+        saves = sorted((user_data_directory() / "saves").glob("*.prison"), key=lambda p: p.stat().st_mtime)
+        if not saves:
+            raise ValueError("No .prison saves found")
+        save = saves[-1]
+    loaded = load_prison(save)
+    meta = {"path": str(loaded.path), "bytes": loaded.size, "mtime": loaded.mtime, "sha256": loaded.sha256}
+    return {"source": meta, "state": loaded.root.to_dict() if full else summarize(loaded.root)}
+
+
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -92,6 +112,20 @@ def main(argv=None) -> int:
             result = {"stop_latched": path.exists(), "path": str(path)}
         elif args.command == "doctor":
             result = doctor(config)
+        elif args.command == "mcp":
+            from .bridge.mcp_server import main as mcp_main
+            return mcp_main()
+        elif args.command in ("lua", "bridge"):
+            from .bridge import BridgeClient
+            client = BridgeClient(timeout=getattr(args, "timeout", 10.0))
+            if args.command == "bridge":
+                result = client.status()
+                result["game"] = client.ping()
+            else:
+                code = Path(args.code[1:]).read_text(encoding="utf-8") if args.code.startswith("@") else args.code
+                result = {"result": client.exec(code, args.timeout), "logs": client.drain_logs()}
+        elif args.command == "state":
+            result = read_state(args.save, args.full)
         else:
             from .controller import PrisonArchitectController
             controller = PrisonArchitectController(config)
@@ -113,7 +147,7 @@ def main(argv=None) -> int:
                 result = controller.execute(args.action, **arguments)
         print(json.dumps(result, indent=2))
         return 0
-    except (BridgeError, OSError, ValueError, KeyError) as exc:
+    except (BridgeError, OSError, ValueError, KeyError, RuntimeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 2
     except KeyboardInterrupt:

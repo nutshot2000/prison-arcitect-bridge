@@ -31,6 +31,21 @@ If you already installed this checkout's virtual environment, run the last comma
 
 Screenshots, metadata and JSONL event records appear in a separate directory under `runs/` for every CLI invocation. All coordinates are **unscaled pixels relative to the game client**, excluding the title bar and borders. Inspect your own screenshot before choosing any coordinates.
 
+## Live game bridge (experimental)
+
+The bridge gives agents live, in-game access instead of screen clicks:
+
+- `native/bin/GLU32.dll` (source `native/pa_bridge.c`, build with `native/build.sh`): copy into the game folder. The game loads it as its GLU32; it forwards GLU calls to the system DLL, replaces the Lua function `Game.DebugOut` (only on the exact Steam build `The_Jailhouse_1.02`, r11056; it checks the bytes first) and listens on **127.0.0.1:8972** only. Delete the file to uninstall.
+- `mod/ai_bridge`: copy into `%LOCALAPPDATA%\Introversion\Prison Architect\mods` and enable **AI Bridge** in Extras > Mods. Its `world.lua` runs requests with the full world-script API: `Game.*` (about 85 functions, including `SetZoneRoom`, `SaveMap`, `SpawnPrisoners` and camera), `WorkQueue.Request` (construction and objects built by workmen), `World`, `Object` and `Objective`.
+- `pa-agent bridge`, `pa-agent lua "return api.info()"`, and `pa-agent mcp` (stdio MCP server with `pa_lua`, `pa_build_*`, `pa_place_object`, `pa_zone`, `pa_materials`, `pa_camera`, `pa_snapshot`, `pa_status`).
+- `pa-agent state [save]`: read-only parser for `.prison` saves.
+
+Scripts only run while the simulation runs, so requests wait while the game is paused or in a menu. The in-game side is tested offline; the full DLL-to-agent loop still needs its first live run (see `docs/validation.md`).
+
+```powershell
+claude mcp add prison-architect -- C:\path\to\prison-arcitect-bridge\.venv\Scripts\pa-agent.exe mcp
+```
+
 ## Implemented
 
 - Steam library discovery, exact executable-path allowlisting, process identity checks and unambiguous window detection.
@@ -64,7 +79,7 @@ See [validation.md](docs/validation.md) for what has actually been tested, inclu
 
 ## Current limitations
 
-MCP, world coordinates, save parsing, UI recognition, Lua telemetry, benchmarks and autonomous construction are **not implemented**. The first assignment explicitly asks to establish the standalone controller before these features. Persistent key-down/key-up commands are deliberately withheld; use bounded holds (`input key w --duration 0.5`).
+UI recognition, benchmarks and autonomous play are **not implemented**; the live bridge above is experimental. The first assignment explicitly asks to establish the standalone controller before these features. Persistent key-down/key-up commands are deliberately withheld; use bounded holds (`input key w --duration 0.5`).
 
 The screenshot backend crops the desktop. The game must be foreground, restored and on-screen. Overlays can appear in captures; exclusive fullscreen and mixed-DPI multi-monitor configurations still require live validation. Windows input is a global stream: focus checks reduce risk but cannot make delivery atomic with a focus change. Abrupt process termination or OS failure cannot guarantee cleanup. Do not run the game elevated while the controller is unelevated.
 

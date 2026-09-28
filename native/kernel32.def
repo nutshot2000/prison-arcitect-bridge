@@ -1,0 +1,21 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+LoadLibraryA
+GetProcAddress
+GetSystemDirectoryA
+VirtualProtect
+FlushInstructionCache
+GetCurrentProcess
+CreateThread
+InitializeCriticalSection
+EnterCriticalSection
+LeaveCriticalSection
+GetProcessHeap
+HeapAlloc
+HeapFree
+GetTickCount64
+Sleep
+GetEnvironmentVariableA
+CreateFileA
+WriteFile
+DisableThreadLibraryCalls

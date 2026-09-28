@@ -43,3 +43,40 @@ These paths are local test evidence under ignored `runs/`. They are intentionall
 ```
 
 For live input, place the game in the foreground, inspect the newest screenshot, then choose a harmless operation with `--live`. Do not reuse the coordinates above if the resolution, UI layout or screen has changed.
+
+# Validation — 23 September 2026: save parser and Lua capability probe
+
+## Save parser (`pa_agent.state`)
+
+5 unit tests pass (synthetic fixture; no game data in the repo). Live parse of local saves: pa4 (0.5 MB) 0.04 s, autosave (0.9 MB) 0.04 s, MaxSec_Ironfort (13.5 MB) 0.84 s: 370 prisoners with names/positions, 13 staff types, 24 room types, research state. `pa-agent state [save] [--full]` added (CLI run on Windows not yet tested; tested via the Linux VM with Python 3.10 and a tomllib stub).
+
+## Lua probe (`mod/ai_bridge_probe`)
+
+Installed into `%LOCALAPPDATA%\Introversion\Prison Architect\mods`, enabled via Extras > Mods (stored as `Mods "AI Bridge Probe"` in preferences.txt). Probe object injected into a copy of pa4 (`probe_inject.prison`); results read back from the user's `probe.prison` save. Script properties persist in the save: object scripts under their object, `data/world.lua` under `BEGIN WorldScripts`.
+
+| Capability | Object script | World script (`data/world.lua`) |
+| --- | --- | --- |
+| io / os / debug / package / require / loadfile / dofile | nil | nil |
+| loadstring, load, setfenv, getfenv, string.dump, coroutine | available (`loadstring("return 6*7")()` = 42) | available |
+| Game | DebugOut, Time only | ~85 functions incl. SaveMap, Pause, GetGameSpeed, Spawn, SpawnPrisoners, SetZoneRoom, SetMaterial, SetProperty/GetProperty, GetObject, GetNumRooms, GetRoomCondition, SendEntityToPos/Room, Cam*, Delivery, SetIntakeOpen |
+| WorkQueue.Request | nil (documented but not bound) | works: ConcreteWall at (20,20) and a Bench were queued and then **built by workmen** (confirmed in save) |
+| Objective / Trigger | nil | available |
+| World | GetCell, ObjectId(s), DataRegistry; NumPrisoners/Capacity are tables, not functions | same |
+| Object | Spawn, Delete, Get/SetProperty, NavigateTo, GetNearbyObjects, CreateJob... | same |
+| Interface | available | nil |
+| DebugOut / F3 debugger | no window appeared; nothing written to debug.txt | same |
+
+Conclusions: the world script is the in-game "hands" (building, zoning candidates, spawning, camera, pause, on-demand save). Output can leave via saves (`Game.SaveMap` untested). There is still **no live input channel**: nothing outside the game can hand the script a command without a save reload. A native helper that runs Lua in this world-script environment is the remaining gap.
+
+Input note: computer-use clicks/keys were unreliable in the game menus at 125% scaling (clicks offset, then ignored); the manual steps were done by the user.
+
+# Validation — 23 September 2026: first live bridge run
+
+Bridge DLL 0.2.1 (installed as `GLU32.dll`), mod AI Bridge (runtime 0.2.0), user's Windows PowerShell, new sandbox prison, game unpaused.
+
+- 0.2.0 crashed at startup with `0xC0000139` (entry point not found) before its DllMain ran: something in the process loads `glu32.dll` by name and needs exports beyond the 6 the exe uses. 0.2.1 forwards all 52 glu32 exports and starts normally.
+- `pa_bridge.log`: loaded, `Game.DebugOut` patched, listening on 127.0.0.1:8972, runtime hello received.
+- `pa-agent bridge` → `{"patched": true, "lua_seen": 1, "ms_since_poll": 0, "game": {"pong": true, "time": 57502.26}}`.
+- `pa-agent lua "return api.build_wall_rect('BrickWall', 10, 10, 15, 14)"` → `{"queued": 18}` (correct outline count). Construction by workmen not yet visually confirmed.
+
+Not yet tested live: MCP server with a real client, `pa_snapshot` (`Game.SaveMap` path), `api.zone`, `api.camera`, behavior while paused.

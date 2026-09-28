@@ -1,0 +1,3 @@
+Name            "AI Bridge"
+Author          "prison-arcitect-bridge"
+Description     "Lets AI agents play Prison Architect through pa_bridge.dll. Does nothing without it."
