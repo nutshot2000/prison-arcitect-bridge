@@ -193,6 +193,10 @@ assert(not cab["62,5"], "no cable on the station itself")
 assert(not cab["88,70"], "outdoor street light must not be cabled")
 assert(cab["50,5"], "the capacitor is connected like any other user")
 r = call("hookup", "power"); assert(r.result.pieces_ordered == 0, "second hookup must not re-lay")
+-- cells that already have cable (read from a save) are reused: a cooker next to them needs 1 piece
+r = call("place_object", "Cooker", 75, 20)
+r = call("hookup", "power", { "71,20", "72,20", "73,20", "74,20", "70,20", "70,19", "70,18" })
+assert(r.ok and r.result.pieces_ordered <= 2, "existing cable must be reused: " .. J.encode(r))
 calls = {}
 r = call("place_object", "WaterPumpStation", 60, 20)
 r = call("place_object", "Toilet", 60, 30)

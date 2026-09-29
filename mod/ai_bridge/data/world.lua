@@ -752,6 +752,19 @@ LAYOUTS.cell = function(x1, y1, x2, y2, out)
     return "Cell: bed and toilet. Zone it as Cell."
 end
 
+-- Many beds in one room: rows of beds (1x2) with a 1-cell aisle between rows,
+-- toilets along the right wall. Cheapest beds per dollar.
+LAYOUTS.dormitory = function(x1, y1, x2, y2, out)
+    local tx = x2
+    for y = y1, y2, 2 do put(out, "Toilet", tx, y) end
+    local y = y1
+    while y + 1 <= y2 do
+        for x = x1, tx - 2, 2 do put(out, "Bed", x, y) end
+        y = y + 3
+    end
+    return "Dormitory: rows of beds and toilets on the right wall. Zone as Dormitory. Toilets need water (hookup)."
+end
+
 LAYOUTS.office = function(x1, y1, x2, y2, out)
     put(out, "OfficeDesk", x1, y1); put(out, "Chair", x1, y1 + 1); put(out, "FilingCabinet", x2, y1)
     return "Office: desk, chair, filing cabinet. Zone as Office (Warden, Accountant...)."
@@ -776,7 +789,8 @@ local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put i
 -- furnish kind -> room type to zone
 local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower", yard = "Yard",
                     holding = "HoldingCell", cell = "Cell", office = "Office", staffroom = "Staffroom",
-                    infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage" }
+                    infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage",
+                    dormitory = "Dormitory" }
 
 local function kind_names()
     local names = {}
@@ -809,6 +823,7 @@ doc("furnish", "kind, x1, y1, x2, y2",
 -- Everything for one room in one call: walls + floor + door, furniture, zone.
 -- Yards, deliveries and garbage are outdoor areas: no walls, just a floor (or ground) and the zone.
 local OUTDOOR = { yard = true, deliveries = true, garbage = true }
+local JAIL_DOOR = { holding = true, dormitory = true }
 function api.room(kind, x1, y1, x2, y2, door_side)
     kind = string.lower(tostring(kind or ""))
     local room = KIND_ROOM[kind]
@@ -820,7 +835,7 @@ function api.room(kind, x1, y1, x2, y2, door_side)
         if kind ~= "yard" then api.build_area("ConcreteFloor", x1, y1, x2, y2) end
         built = "outdoor area (no walls)"
     else
-        local b = api.building(x1, y1, x2, y2, door_side or "south", kind == "holding" and "JailDoor" or "Door")
+        local b = api.building(x1, y1, x2, y2, door_side or "south", JAIL_DOOR[kind] and "JailDoor" or "Door")
         inside, built = b.inside, "walls, floor and a " .. b.door.object .. " at " .. b.door.x .. "," .. b.door.y
     end
     local f = api.furnish(kind, inside.x1, inside.y1, inside.x2, inside.y2)
@@ -1050,14 +1065,23 @@ function api.utilities(switch_on)
     with_anchor(function(anchor, radius)
         for o in pairs(Object.GetNearbyObjects(anchor, "PowerStation", radius) or {}) do
             if o ~= anchor then
-                local on, dem, cap = o.On, tonumber(o.Demand) or 0, tonumber(o.Capacity) or 0
-                if switch_on and on == false then o.On = true; on = "switched back on" end
+                -- measured live: the player's on/off is `Switch` (On is recomputed by the game);
+                -- a trip sets Switch=false and Overloaded>0. Two stations touching each other
+                -- trip at once; each station feeds up to Capacity 50 on its own grid.
+                local on, dem, cap = o.Switch ~= false, tonumber(o.Demand) or 0, tonumber(o.Capacity) or 0
+                local over = tonumber(o.Overloaded) or 0
+                if switch_on and not on then o.Overloaded = 0; o.Switch = true; on = "reset" end
                 out.power_stations[#out.power_stations + 1] = { x = math.floor(o.Pos.x), y = math.floor(o.Pos.y), on = on,
-                                                                demand = dem, capacity = cap }
+                                                                demand = dem, capacity = cap, overloaded = over }
                 out.capacity = out.capacity + cap; out.demand = out.demand + dem
                 if on == false then
                     out.problems[#out.problems + 1] = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
-                        " is OFF (tripped: too much demand). Build another PowerStation next to it, then api.utilities(true)."
+                        " is OFF (tripped). Each station powers at most 50 on its own grid and stations must NOT touch " ..
+                        "each other. Split the grid with a PowerSwitch or give the extra load its own station " ..
+                        "(with a gap), then api.utilities(true) to reset."
+                elseif dem > cap * 0.9 then
+                    out.problems[#out.problems + 1] = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
+                        " is nearly full (" .. dem .. "/" .. cap .. "): the next cooker or light may trip it."
                 end
             end
         end
@@ -1078,11 +1102,29 @@ end
 doc("utilities", "[switch_on]", "Power stations (on? demand/capacity) and water pumps (powered?). " ..
     "api.utilities(true) switches tripped stations back on.", "api.utilities()")
 
-function api.hookup(kind)
+-- Turn a PowerSwitch on or off (like clicking it in the game). A switch placed on a
+-- cable splits the grid; off = everything behind it loses power.
+function api.switch(x, y, on)
+    x, y = rect(x, y, x, y, "switch")
+    local found
+    with_anchor(function(anchor, radius)
+        for o in pairs(Object.GetNearbyObjects(anchor, "PowerSwitch", radius) or {}) do
+            if o ~= anchor and math.floor(o.Pos.x) == x and math.floor(o.Pos.y) == y then found = o end
+        end
+    end)
+    if not found then error("no PowerSwitch installed at " .. x .. "," .. y .. " (order one with api.place_object(\"PowerSwitch\", x, y) on a cable)", 0) end
+    found.On = (on == true or on == "on" or on == 1)
+    return { switch = x .. "," .. y, on = found.On }
+end
+doc("switch", "x, y, on", "Turn the PowerSwitch at x,y on (true) or off (false).", "api.switch(130, 10, false)")
+
+-- known: optional list of "x,y" cells that already carry this utility (the easy
+-- front end reads them from a fresh save), so existing lines are reused, not re-bought.
+function api.hookup(kind, known)
     kind = string.lower(tostring(kind or ""))
     if kind == "" or kind == "both" or kind == "all" then
-        local p = api.hookup("power")
-        local w = api.hookup("water")
+        local p = api.hookup("power", type(known) == "table" and known.power or nil)
+        local w = api.hookup("water", type(known) == "table" and known.water or nil)
         return { power = p, water = w }
     end
     if not NEEDS[kind] then error("kind must be \"power\", \"water\" or \"both\"", 0) end
@@ -1099,6 +1141,16 @@ function api.hookup(kind)
         end
     end
     for k in pairs(PLANNED_UTIL[kind]) do local x, y = string.match(k, "(-?%d+),(-?%d+)"); add(tonumber(x), tonumber(y)) end
+    local reused = 0
+    if type(known) == "table" then
+        for _, k in ipairs(known) do
+            local x, y = string.match(tostring(k), "(-?%d+),(-?%d+)")
+            if x then
+                add(tonumber(x), tonumber(y)); reused = reused + 1
+                PLANNED_UTIL[kind][k] = PLANNED_UTIL[kind][k] or "existing"
+            end
+        end
+    end
     if #netlist == 0 then
         local st = STATION[kind][1]
         error("no " .. st .. " yet. Order one first: api.place_object(\"" .. st .. "\", x, y) (3x3, $5000), then hookup again.", 0)
@@ -1284,6 +1336,17 @@ function api.save_result()
     if r == "pending" then return { done = false } end
     if string.sub(r or "", 1, 3) == "ok " then return { done = true, ok = true, path = string.sub(r, 4) } end
     return { done = r ~= "", ok = false, error = r }
+end
+
+-- ---- screenshot (native, DLL 0.3.1) -------------------------------------------------
+function api.screenshot()
+    return { status = native("screenshot"), note = "The next frame the game draws is saved; check api.screenshot_result()." }
+end
+function api.screenshot_result()
+    local r = native("screenshotresult") or ""
+    if r == "pending" or r == "" then return { done = false } end
+    if string.sub(r, 1, 3) == "ok " then return { done = true, ok = true, path = string.sub(r, 4) } end
+    return { done = true, ok = false, error = r }
 end
 
 -- ---- research (native) -------------------------------------------------------------

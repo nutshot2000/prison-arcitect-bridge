@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from .client import BridgeClient, BridgeError
 
 SNAPSHOT = "pa_agent_snapshot"
+RUNS = Path(__file__).resolve().parents[3] / "runs"
 
 # error text -> what to do about it
 HINTS: list[tuple[str, str]] = [
@@ -74,7 +76,7 @@ VERB_HELP = {
                "  to the nearest station or line. Needs a PowerStation and a WaterPumpStation first."),
     "power": ("power [on]",
               "Power stations (on/off, demand vs capacity 50 each) and whether water pumps have power.\n"
-              "  `power on` switches tripped stations back on - add another PowerStation first or it trips again."),
+              "  `power on` resets tripped stations. Each station feeds up to 50 on its own grid; stations must not touch."),
     "zone": ("zone <RoomType> <x1> <y1> <x2> <y2>", "Zone a rectangle (use the INSIDE of a room). `roomtypes` lists types."),
     "unzone": ("unzone <x1> <y1> <x2> <y2>", "Remove zoning."),
     "roomtypes": ("roomtypes", "Every room type the game knows."),
@@ -88,6 +90,13 @@ VERB_HELP = {
     "wait": ("wait [seconds] [speed]", "Let the game run (default 60 s at speed 3), then report what got built."),
     "progress": ("progress", "What you ordered that is built vs still waiting."),
     "save": ("save [name]", "Save the prison (saves/<name>.prison)."),
+    "report": ("report",
+               "What is going on inside: where prisoners are, what they complain about, injured/down staff,\n"
+               "  power stations and pump, escapes/deaths/fights today, and what to fix first."),
+    "utilmap": ("utilmap [power|water|both] [x1 y1 x2 y2]",
+                "Map of cables, pipes, stations and which objects have power/water (like the game's utilities view)."),
+    "switch": ("switch <x> <y> <on|off>", "Turn a PowerSwitch on or off (it splits the power grid)."),
+    "screenshot": ("screenshot [scale]", "Picture of what the game shows now, saved as a PNG (scale 2 = half size)."),
     "next": ("next", "What the prison needs next, in order. Start every session with `status` then `next`."),
     "lua": ("lua <code>", "Experts: run Lua in the game (`return` a value)."),
 }
@@ -210,8 +219,25 @@ class Easy:
         gates = ", ".join(r["road_gates"]) or "none"
         return f"fence ordered: {r['fence_cells']} cells, road gates at {gates} (~${_n(r['cost_estimate'])}).\n{r['note']}"
 
+    def existing_utilities(self) -> dict[str, list[str]]:
+        """Cells that already have cable / pipe, read from a fresh save."""
+        root = self.snapshot()
+        out: dict[str, list[str]] = {"power": [], "water": []}
+        for name, key in (("Electricity", "power"), ("Water", "water")):
+            sec = root.section(name)
+            for c in sec.sections() if sec else []:
+                parts = c.name.split()
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                    if key == "water" and c.get("PipeType") is None:
+                        continue
+                    out[key].append(f"{parts[0]},{parts[1]}")
+        return out
+
     def v_hookup(self, kind: str = "both") -> str:
-        r = self.call("hookup", kind)
+        known = self.existing_utilities()
+        kind = kind.lower()
+        arg = known if kind in ("both", "all", "") else known.get(kind, [])
+        r = self.call("hookup", kind, arg)
         parts = [r] if "kind" in r else [r["power"], r["water"]]
         lines = [f"{p['kind']}: {p['objects_needing_it']} objects need it, {p['newly_connected']} newly connected, "
                  f"{p['pieces_ordered']} pieces ordered" for p in parts]
@@ -225,6 +251,51 @@ class Easy:
                   for p in u["pumps"]]
         lines += ["PROBLEM: " + p for p in u["problems"]]
         return "\n".join(lines) or "no stations"
+
+    def v_report(self) -> str:
+        from ..state.report import situation, situation_text
+        return situation_text(situation(self.snapshot()))
+
+    def v_utilmap(self, kind: str = "both", *xy: str) -> str:
+        from ..state.report import built_area, utility_map
+        if kind.lstrip("-").isdigit():  # numbers without a kind
+            xy, kind = (kind, *xy), "both"
+        root = self.snapshot()
+        if xy:
+            if len(xy) != 4:
+                raise EasyError("utilmap takes [power|water|both] and optionally x1 y1 x2 y2")
+            x1, y1, x2, y2 = self._ints(*xy)
+        else:
+            x1, y1, x2, y2 = built_area(root)
+            if x2 - x1 > 110:
+                x2 = x1 + 110
+        return utility_map(root, x1, y1, x2, y2, kind.lower())
+
+    def screenshot(self, scale: int = 2, timeout: float = 10.0) -> Path:
+        """Ask the DLL for the next rendered frame; return a PNG under runs/screenshots."""
+        from .image import downscale, read_bmp, write_png
+        self.call("screenshot")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            r = self.call("screenshot_result")
+            if r.get("done"):
+                if not r.get("ok"):
+                    raise EasyError(f"screenshot failed: {r.get('error')}")
+                w, h, rows = read_bmp(Path(r["path"]))
+                w, h, rows = downscale(w, h, rows, max(1, int(scale)))
+                out = RUNS / "screenshots" / time.strftime("pa-%Y%m%d-%H%M%S.png")
+                return write_png(out, w, h, rows)
+            time.sleep(0.2)
+        raise EasyError("no frame was drawn in time: is the game minimised? (it only draws while visible or in "
+                        "the taskbar preview)")
+
+    def v_screenshot(self, scale: str = "2") -> str:
+        p = self.screenshot(int(scale))
+        return f"saved {p} (what the game shows right now; open it to look)"
+
+    def v_switch(self, x: str, y: str, state: str) -> str:
+        r = self.call("switch", *self._ints(x, y), state.lower() in ("on", "true", "1"))
+        return f"switch at {r['switch']} is now {'ON' if r['on'] else 'OFF'}"
 
     def v_zone(self, room_type: str, x1: str, y1: str, x2: str, y2: str) -> str:
         r = self.call("zone", room_type, *self._ints(x1, y1, x2, y2))

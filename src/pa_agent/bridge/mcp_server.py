@@ -92,6 +92,13 @@ class Server:
         verb("pa_power", "power", "Power stations (on/off, demand vs capacity) and whether the water pump has power "
              "(no power = no water). action \"on\" switches tripped stations back on.",
              {"action": {"type": "string", "enum": ["", "on"]}}, [], ["action"])
+        verb("pa_report", "report", "What is going on inside: prisoners (where, complaints, worst needs), injured staff, "
+             "power/water status, escapes, deaths, fights, and what to fix first. Use when things go wrong.", {}, [], [])
+        verb("pa_utilmap", "utilmap", "Map of cables, pipes, power stations and pumps, marking objects WITHOUT power or "
+             "water. kind: power, water or both; optional x1,y1,x2,y2.",
+             {"kind": {"type": "string", "enum": ["both", "power", "water"]}, **RECT}, [], ["kind", *RECT])
+        verb("pa_switch", "switch", "Turn the PowerSwitch at x,y on or off.",
+             {"x": INT, "y": INT, "state": {"type": "string", "enum": ["on", "off"]}}, ["x", "y", "state"], ["x", "y", "state"])
         verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",
@@ -109,6 +116,16 @@ class Server:
         verb("pa_save", "save", "Save the prison to saves/<name>.prison.", {"name": STR}, [], ["name"])
         verb("pa_help", "help", "List the easy verbs, or explain one (verb: room, cells, hire...).", {"verb": STR}, [],
              ["verb"])
+
+        @self.tool("pa_screenshot", "Look at the game: a picture of what the game window shows right now "
+                   "(the player's current view). scale 2 = half size (default), 3 = third.",
+                   _schema({"scale": INT}, []))
+        def _shot(a):
+            import base64
+            path = easy.screenshot(int(a.get("scale") or 2))
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+            return {"__content__": [{"type": "image", "data": data, "mimeType": "image/png"},
+                                    {"type": "text", "text": f"saved {path}"}]}
 
         @self.tool("pa_connection", "Diagnose the connection: bridge DLL loaded, game script running, pump, clients.",
                    _schema({}, []))
@@ -181,6 +198,8 @@ class Server:
                 return self._err(mid, -32602, f"unknown tool {name}")
             try:
                 result = self.tools[name][2](params.get("arguments") or {})
+                if isinstance(result, dict) and "__content__" in result:
+                    return self._ok(mid, {"content": result["__content__"], "isError": False})
                 text = result if isinstance(result, str) else json.dumps(result, indent=1, default=str)
                 return self._ok(mid, {"content": [{"type": "text", "text": text}], "isError": False})
             except EasyError as exc:

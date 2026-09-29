@@ -20,3 +20,4 @@ CreateFileA
 WriteFile
 DisableThreadLibraryCalls
 GetCurrentThreadId
+CloseHandle

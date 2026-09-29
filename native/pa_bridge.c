@@ -23,6 +23,10 @@
  *   Game.DebugOut("\1saveresult")   -> "" | "ok <path>" | "error: ..."
  *   Game.DebugOut("\1researchlist") -> "Name:desired:percent,..."
  *   Game.DebugOut("\1research:<Name>") -> "ok" | "error: ..." (game charges the cost)
+ *   Game.DebugOut("\1screenshot")   -> "queued"; the next rendered frame (the image the
+ *                                    player last saw) is written to
+ *                                    %LOCALAPPDATA%\Introversion\Prison Architect\pa_bridge_screenshot.bmp
+ *   Game.DebugOut("\1screenshotresult") -> "pending" | "ok <path>" | "error: ..."
  *   anything else                   -> treated as print(); sent as a log event
  *
  * Native actions call the game's own code paths, found by disassembly of
@@ -74,6 +78,7 @@ IMPORT void __stdcall Sleep(u32);
 IMPORT u32 __stdcall GetEnvironmentVariableA(const char *, char *, u32);
 IMPORT HANDLE __stdcall CreateFileA(const char *, u32, u32, void *, u32, u32, HANDLE);
 IMPORT BOOL __stdcall WriteFile(HANDLE, const void *, u32, u32 *, void *);
+IMPORT BOOL __stdcall CloseHandle(HANDLE);
 IMPORT BOOL __stdcall DisableThreadLibraryCalls(void *);
 IMPORT u32 __stdcall GetCurrentThreadId(void);
 
@@ -108,7 +113,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.3.0"
+#define BRIDGE_VERSION "0.3.1"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -572,6 +577,64 @@ static int native_setspeed(void *L, const char *s, size_t n) {
     return push_str(L, "ok");
 }
 
+/* ---- screenshots (read the last shown frame from inside the render loop) ---- */
+typedef void (__stdcall *glReadBuffer_t)(u32);
+typedef void (__stdcall *glReadPixels_t)(i32, i32, i32, i32, u32, u32, void *);
+typedef void (__stdcall *glGetIntegerv_t)(u32, i32 *);
+typedef void (__stdcall *glPixelStorei_t)(u32, i32);
+typedef u32 (__stdcall *glGetError_t)(void);
+static int g_shot_pending = 0;
+static char g_shot_result[400];
+
+static void do_screenshot(void) {
+    g_shot_pending = 0;
+    sbuf r = {g_shot_result, 0, sizeof g_shot_result};
+    void *gl = LoadLibraryA("opengl32.dll");
+    glReadBuffer_t rb = gl ? (glReadBuffer_t)GetProcAddress(gl, "glReadBuffer") : 0;
+    glReadPixels_t rp = gl ? (glReadPixels_t)GetProcAddress(gl, "glReadPixels") : 0;
+    glGetIntegerv_t gi = gl ? (glGetIntegerv_t)GetProcAddress(gl, "glGetIntegerv") : 0;
+    glPixelStorei_t ps = gl ? (glPixelStorei_t)GetProcAddress(gl, "glPixelStorei") : 0;
+    glGetError_t ge = gl ? (glGetError_t)GetProcAddress(gl, "glGetError") : 0;
+    if (!rb || !rp || !gi || !ps || !ge) { sb_str(&r, "error: opengl32 functions not found"); return; }
+    i32 vp[4] = {0, 0, 0, 0}, oldbuf = 0, oldpack = 4;
+    gi(0x0BA2 /* GL_VIEWPORT */, vp);
+    i32 w = vp[2], h = vp[3];
+    if (w <= 0 || h <= 0 || w > 8192 || h > 8192) { sb_str(&r, "error: bad viewport"); return; }
+    u32 stride = ((u32)w * 3 + 3) & ~3u;
+    u32 size = stride * (u32)h;
+    u8 *buf = HeapAlloc(GetProcessHeap(), 0, 54 + size);
+    if (!buf) { sb_str(&r, "error: out of memory"); return; }
+    gi(0x0C02 /* GL_READ_BUFFER */, &oldbuf);
+    gi(0x0D05 /* GL_PACK_ALIGNMENT */, &oldpack);
+    while (ge()) {}
+    ps(0x0D05, 4);
+    rb(0x0404 /* GL_FRONT */);
+    rp(vp[0], vp[1], w, h, 0x80E0 /* GL_BGR_EXT */, 0x1401 /* GL_UNSIGNED_BYTE */, buf + 54);
+    u32 err = ge();
+    rb((u32)oldbuf);
+    ps(0x0D05, oldpack);
+    if (err) { HeapFree(GetProcessHeap(), 0, buf); sb_str(&r, "error: glReadPixels failed"); return; }
+    /* BMP header: bottom-up rows, 24 bit (glReadPixels also returns bottom-up rows) */
+    memset(buf, 0, 54);
+    buf[0] = 'B'; buf[1] = 'M';
+    *(u32 *)(buf + 2) = 54 + size; *(u32 *)(buf + 10) = 54; *(u32 *)(buf + 14) = 40;
+    *(i32 *)(buf + 18) = w; *(i32 *)(buf + 22) = h; *(u16 *)(buf + 26) = 1; *(u16 *)(buf + 28) = 24;
+    *(u32 *)(buf + 34) = size;
+    char path[400];
+    u32 n = GetEnvironmentVariableA("LOCALAPPDATA", path, 300);
+    if (!n || n > 300) { HeapFree(GetProcessHeap(), 0, buf); sb_str(&r, "error: LOCALAPPDATA not set"); return; }
+    const char *tail = "\\Introversion\\Prison Architect\\pa_bridge_screenshot.bmp";
+    memcpy(path + n, tail, slen(tail) + 1);
+    HANDLE f = CreateFileA(path, 0x40000000, 0, 0, 2, 0x80, 0);
+    if (f == (HANDLE)(i64)-1) { HeapFree(GetProcessHeap(), 0, buf); sb_str(&r, "error: cannot write "); sb_str(&r, path); return; }
+    u32 wr = 0;
+    WriteFile(f, buf, 54 + size, &wr, 0);
+    CloseHandle(f);
+    HeapFree(GetProcessHeap(), 0, buf);
+    sb_str(&r, wr == 54 + size ? "ok " : "error: short write ");
+    sb_str(&r, path);
+}
+
 /* ---- the DebugOut replacement ---- */
 static int __cdecl bridge_debugout(void *L) {
     const char *s; size_t n;
@@ -629,6 +692,8 @@ static int __cdecl bridge_debugout(void *L) {
         }
         if (starts(s, n, "save:")) return native_save(L, s + 5, n - 5);
         if (starts(s, n, "saveresult")) return push_str(L, g_save_pending ? "pending" : g_save_result);
+        if (starts(s, n, "screenshotresult")) return push_str(L, g_shot_pending ? "pending" : g_shot_result);
+        if (starts(s, n, "screenshot")) { g_shot_result[0] = 0; g_shot_pending = 1; return push_str(L, "queued"); }
         if (starts(s, n, "researchlist")) return native_researchlist(L);
         if (starts(s, n, "research:")) return native_research(L, s + 9, n - 9);
         return 0;
@@ -643,6 +708,7 @@ static void frame_tick(void) {
     if (!g_main_tid || g_pumping || GetCurrentThreadId() != g_main_tid) return;
     u8 *w = get_world();
     if (w != g_world) g_L = 0; /* prison unloaded or replaced: its Lua state is gone */
+    if (g_shot_pending) do_screenshot();
     if (!w) return;
     if (g_save_pending) do_save();
     if (!g_pump_enabled || !g_L) return;

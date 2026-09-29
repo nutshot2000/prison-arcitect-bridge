@@ -76,5 +76,34 @@ class EasyTests(unittest.TestCase):
         self.assertIn("#_.", out)
 
 
+class ImageTests(unittest.TestCase):
+    def test_bmp_to_png_roundtrip(self):
+        import struct
+        import tempfile
+        import zlib
+        from pathlib import Path
+        from pa_agent.bridge.image import downscale, read_bmp, write_png
+        w, h = 3, 2
+        stride = (w * 3 + 3) & ~3
+        pad = bytes(stride - w * 3)
+        rows_bottom_up = [bytes([0, 0, 255] * w) + pad,   # red in BGR: the bottom row
+                          bytes([255, 0, 0] * w) + pad]   # blue in BGR: the top row
+        body = b"".join(rows_bottom_up)
+        hdr = b"BM" + struct.pack("<IHHI", 54 + len(body), 0, 0, 54) + \
+            struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0, len(body), 0, 0, 0, 0)
+        with tempfile.TemporaryDirectory() as d:
+            bmp = Path(d) / "a.bmp"
+            bmp.write_bytes(hdr + body)
+            W, H, rows = read_bmp(bmp)
+            self.assertEqual((W, H), (3, 2))
+            self.assertEqual(rows[0][:3], bytes([0, 0, 255]))   # top row: blue as RGB
+            self.assertEqual(rows[1][:3], bytes([255, 0, 0]))   # bottom row: red as RGB
+            png = write_png(Path(d) / "a.png", W, H, rows).read_bytes()
+            self.assertEqual(png[1:4], b"PNG")
+            raw = zlib.decompressobj().decompress(png[png.index(b"IDAT") + 4:])
+            self.assertEqual(raw[:4], bytes([0, 0, 0, 255]))  # filter byte, then the blue pixel
+            self.assertEqual(downscale(W, H, rows, 2)[:2], (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
