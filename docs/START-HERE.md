@@ -59,9 +59,12 @@ Then hire a Warden, build `room office`, and `research Health` (Doctors) because
    prisoners and 4 people died. Lower the intake in the game (Reports > Intake) until beds ≥ prisoners.
 2. **Fence first.** `fence` around the whole prison, including Deliveries and Garbage by the road. Escapes dropped to
    0 once it stood.
-3. **Power:** one PowerStation feeds **50** on its own grid. Two stations **touching each other trip at once**. Leave a
-   gap and give each its own grid, split with a PowerSwitch if needed. A tripped station shows `PROBLEM: ... OFF` in
-   `status`; `power on` resets it after you remove the load.
+3. **Power:** one PowerStation feeds **50**, and a cooker alone takes about **10** (6 cookers + 2 fridges + lights =
+   90). **Two stations on the same grid switch each other off** (`Overloaded 2`), whether they touch or are joined by
+   cable. They do not share load. Give every station its own grid: put a `place PowerSwitch x y` on each cable between
+   the parts and `switch x y off`. Check with `power`: each station should read under 50. A tripped station shows
+   `PROBLEM: ... OFF`; `power on` resets it after you fix the cause. `utilmap power` shows the cables (objects are
+   drawn over the cable under them, so look at the cells around them).
 4. **No power, no water.** The WaterPumpStation needs electricity. Blue drops over toilets/showers in the game = no
    water; check `power` first.
 5. **Never cable the road's street lights.** The map powers them itself (`ExternalPower`). `hookup` skips them now.

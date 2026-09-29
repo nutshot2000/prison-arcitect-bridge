@@ -7,6 +7,7 @@ the api.* helpers in the mod's world.lua.
 from __future__ import annotations
 
 import re
+from collections import Counter
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -478,23 +479,54 @@ class Easy:
             todo.append(f"Guards: have {staff.get('Guard', 0)}, want {want_guards}: `hire Guard {want_guards - staff.get('Guard', 0)}`.")
         if not have.get("HoldingCell") and not have.get("Cell") and not have.get("Dormitory"):
             todo.append("A HoldingCell so arriving prisoners have somewhere to go: `room holding x1 y1 x2 y2` (about 9x8).")
-        if beds < pris + 4:
-            todo.append(f"Beds {beds} < prisoners {pris}: `room dormitory x1 y1 x2 y2` (15x15 = ~24 beds) or `cells x y 8`.")
+        try:
+            bed_orders = self.call("progress").get("objects", {}).get("Bed", {})
+            coming = max(0, bed_orders.get("ordered", 0) - bed_orders.get("installed", 0))
+        except (BridgeError, AttributeError):
+            coming = 0
+        if beds + coming < pris + 4:
+            todo.append(f"Beds {beds} (+{coming} being built) < prisoners {pris}: `room dormitory x1 y1 x2 y2` "
+                        "(15x15 = ~24 beds) or `cells x y 8`. Keep `intake beds` until they catch up.")
         if not have.get("Kitchen"):
             todo.append("A Kitchen: `room kitchen x1 y1 x2 y2` (9x8), then `hookup`.")
         if not have.get("Canteen"):
             todo.append("A Canteen next to the kitchen: `room canteen ...` (12x10).")
-        if (have.get("Kitchen")) and staff.get("Cook", 0) < 2:
-            todo.append("Cooks for the kitchen: `hire Cook 2`.")
+        # food scale (measured live: 2 cookers left 71 prisoners at ~1% meals): ~1 cooker and 1 cook per 10
+        objs = Counter(str(o.get("Type")) for o in (root.section("Objects").items_indexed()
+                                                    if root.section("Objects") else []))
+        want_cookers = max(2, (pris + 9) // 10)
+        if have.get("Kitchen") and objs.get("Cooker", 0) < want_cookers:
+            todo.append(f"Food: {objs.get('Cooker', 0)} cookers for {pris} prisoners, want {want_cookers} "
+                        "(`place Cooker x y` inside the kitchen, then `hookup power`; watch the station's 50 limit).")
+        if have.get("Kitchen") and staff.get("Cook", 0) < max(2, min(want_cookers, objs.get("Cooker", 0))):
+            todo.append(f"Cooks: have {staff.get('Cook', 0)}, want one per cooker: `hire Cook ...`.")
+        benches = objs.get("Bench", 0)
+        if have.get("Canteen") and benches * 4 < pris // 2:
+            todo.append(f"Canteen seats: ~{benches * 4} seats for {pris} prisoners; build another `room canteen ...` "
+                        "(12x10) or a bigger one.")
+        if not have.get("Staffroom") and sum(staff.values()) >= 10:
+            todo.append("Staff get exhausted without rest (slow building): `room staffroom x1 y1 x2 y2` (8x7).")
         if sit["unpowered"] or any(n in ("Hygiene", "Bladder", "Bowels") for n in sit["complaining_about"]):
             todo.append("Objects without power/water or prisoners needing toilets/showers: `hookup`, then `utilmap`.")
         if not have.get("Shower"):
             todo.append("A Shower room (needs water): `room shower ...` (7x6).")
         if not have.get("Yard"):
             todo.append("A Yard: `room yard ...` (16x12, outdoors).")
-        if sit["staff_hurt"] or sit["staff_down"]:
-            todo.append("Injured staff: a Doctor needs `research Health` (Warden + Office), then `hire Doctor` and "
-                        "`room infirmary ...`.")
+        if sit["staff_hurt"] or sit["staff_down"] or sit["prisoners"] > 20:
+            try:
+                research = {r["name"]: r["status"] for r in self.call("research")["research"]}
+            except (BridgeError, KeyError, TypeError):
+                research = {}
+            health = research.get("Health", "")
+            if health == "done":
+                if not staff.get("Doctor"):
+                    todo.append("Health research is done: `hire Doctor 2` and build `room infirmary x1 y1 x2 y2` (10x8).")
+                elif not have.get("MedicalWard"):
+                    todo.append("Doctors need an infirmary: `room infirmary x1 y1 x2 y2` (10x8).")
+            elif health.startswith("in progress"):
+                pass  # the Warden is on it
+            elif staff.get("Warden") and have.get("Office"):
+                todo.append("Injured people pile up: `research Health` (unlocks Doctors).")
         if not staff.get("Warden"):
             todo.append("A Warden unlocks research: `hire Warden`, then `room office ...` (6x6).")
         elif not have.get("Office"):

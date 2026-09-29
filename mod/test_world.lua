@@ -149,6 +149,11 @@ local s = r.result
 assert(not (s.x1 <= 19 and s.x2 >= 10 and s.y1 <= 19 and s.y2 >= 10), "overlaps wall block")
 assert(s.x2 < 90)
 r = call("find_space", 8, 6, 60, 40); assert(r.ok and math.abs((r.result.x1 + 4) - 60) <= 1, J.encode(r))
+-- a power station on plain dirt must block the space around it
+world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 61.5, y = 41.5 } }
+r = call("find_space", 8, 6, 60, 40); assert(r.ok, r.error)
+assert(r.result.x2 < 60 or r.result.x1 > 62 or r.result.y2 < 40 or r.result.y1 > 42, "space overlaps the station: " .. J.encode(r))
+table.remove(world_objects)
 
 -- objects / staff / count (temporary anchor must be cleaned up)
 r = call("objects", "Workman"); assert(r.ok and r.result.count == 2, J.encode(r))

@@ -503,20 +503,58 @@ function api.find_space(w, h, near_x, near_y, margin)
     -- blocked grid + 2D prefix sums
     local S = {}
     for y = 0, MH do S[y] = {}; for x = 0, MW do S[y][x] = 0 end end
+    -- objects stand on plain ground, so the floor alone does not show them
+    -- (live: a dormitory was offered on top of the power stations)
+    local taken = {}
+    for _, t in ipairs({ "PowerStation", "WaterPumpStation", "Capacitor", "PowerSwitch", "RoadGate",
+                         "WeightsBench", "PhoneBooth", "Tree", "Light" }) do
+        local ok, list = pcall(api.objects, t, 1000)
+        if ok then
+            for _, o in ipairs(list.objects) do
+                local s = (t == "PowerStation" or t == "WaterPumpStation") and 3 or (t == "RoadGate" and 7 or 1)
+                local cx, cy = math.floor(o.x), math.floor(o.y)
+                local h = math.floor(s / 2)
+                for x = cx - h, cx - h + s - 1 do for y = cy - (s == 7 and 0 or h), cy + (s == 7 and 0 or h) do
+                    taken[x .. "," .. y] = true
+                end end
+            end
+        end
+    end
+    for _, o in ipairs(PLANNED_OBJECTS) do
+        local s = (o[1] == "PowerStation" or o[1] == "WaterPumpStation") and 3 or 1
+        for x = o[2], o[2] + s - 1 do for y = o[3], o[3] + s - 1 do taken[x .. "," .. y] = true end end
+    end
+    local fx1, fy1, fx2, fy2, fences = MW, MH, -1, -1, 0
     for y = 1, MH do
         for x = 1, MW do
             local m = Object.GetMaterial(x - 1, y - 1)
-            local b = (OPEN_GROUND[m] and not planned_at(x - 1, y - 1)) and 0 or 1
+            if m == "Fence" or m == "PerimeterWall" or PLANNED[(x - 1) .. "," .. (y - 1)] == "Fence" then
+                fences = fences + 1
+                fx1, fy1 = math.min(fx1, x - 1), math.min(fy1, y - 1)
+                fx2, fy2 = math.max(fx2, x - 1), math.max(fy2, y - 1)
+            end
+            local free = OPEN_GROUND[m] and not planned_at(x - 1, y - 1) and not taken[(x - 1) .. "," .. (y - 1)]
+            if free then  -- outdoor zones (yard, deliveries) have no floor but are in use
+                local ok, rid = pcall(function() return World.GetCell(x - 1, y - 1).Room.i end)
+                if ok and tonumber(rid) and tonumber(rid) >= 0 then free = false end
+            end
+            local b = free and 0 or 1
             S[y][x] = b + S[y - 1][x] + S[y][x - 1] - S[y - 1][x - 1]
         end
     end
     local function blocked(x1, y1, x2, y2)
         return S[y2 + 1][x2 + 1] - S[y1][x2 + 1] - S[y2 + 1][x1] + S[y1][x1]
     end
+    -- with a perimeter fence, only look inside it (live: a dormitory was offered outside the fence)
+    local lx1, ly1, lx2, ly2 = margin, margin, MW - w - margin, MH - h - margin
+    if fences >= 20 then
+        lx1, ly1 = math.max(lx1, fx1 + 1 + margin), math.max(ly1, fy1 + 1 + margin)
+        lx2, ly2 = math.min(lx2, fx2 - w - margin), math.min(ly2, fy2 - h - margin)
+    end
     local best, bestd = nil, nil
     near_x, near_y = tonumber(near_x), tonumber(near_y)
-    for y = margin, MH - h - margin do
-        for x = margin, MW - w - margin do
+    for y = ly1, ly2 do
+        for x = lx1, lx2 do
             if blocked(x - margin, y - margin, x + w - 1 + margin, y + h - 1 + margin) == 0 then
                 local d = 0
                 if near_x then d = math.abs(x + w / 2 - near_x) + math.abs(y + h / 2 - near_y) end
@@ -525,7 +563,10 @@ function api.find_space(w, h, near_x, near_y, margin)
             end
         end
     end
-    if not best then error("no free " .. w .. "x" .. h .. " area of open ground found; try a smaller size", 0) end
+    if not best then
+        error("no free " .. w .. "x" .. h .. " area of open ground found" ..
+              (fences >= 20 and " inside the fence" or "") .. "; try a smaller size", 0)
+    end
     return best
 end
 doc("find_space", "w, h, [near_x, near_y, margin]", "Find an empty w x h area of open ground (for a new building).",
@@ -717,7 +758,7 @@ LAYOUTS.canteen = function(x1, y1, x2, y2, out)
         local x = x1
         while x + 3 <= x2 do
             put(out, "Bench", x, y); put(out, "Table", x, y + 1); put(out, "Bench", x, y + 2)
-            x = x + 5
+            x = x + 4  -- sets side by side; the empty row between set rows is the walkway
         end
         y = y + 4
     end
@@ -1076,10 +1117,16 @@ function api.utilities(switch_on)
                                                                 demand = dem, capacity = cap, overloaded = over }
                 out.capacity = out.capacity + cap; out.demand = out.demand + dem
                 if on == false then
-                    out.problems[#out.problems + 1] = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
-                        " is OFF (tripped). Each station powers at most 50 on its own grid and stations must NOT touch " ..
-                        "each other. Split the grid with a PowerSwitch or give the extra load its own station " ..
-                        "(with a gap), then api.utilities(true) to reset."
+                    local where = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y)
+                    if over >= 2 then
+                        out.problems[#out.problems + 1] = where .. " is OFF: it shares a grid with another station " ..
+                            "(Overloaded 2). Stations do not share load here: give each its own grid - put PowerSwitches " ..
+                            "on the cables between them and `switch x y off` - then api.utilities(true)."
+                    else
+                        out.problems[#out.problems + 1] = where .. " is OFF: too much demand (max 50 per station, a " ..
+                            "cooker takes ~10). Move part of the load to its own station with a PowerSwitch split, then " ..
+                            "api.utilities(true)."
+                    end
                 elseif dem > cap * 0.9 then
                     out.problems[#out.problems + 1] = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
                         " is nearly full (" .. dem .. "/" .. cap .. "): the next cooker or light may trip it."
@@ -1114,8 +1161,9 @@ function api.switch(x, y, on)
         end
     end)
     if not found then error("no PowerSwitch installed at " .. x .. "," .. y .. " (order one with api.place_object(\"PowerSwitch\", x, y) on a cable)", 0) end
-    found.On = (on == true or on == "on" or on == 1)
-    return { switch = x .. "," .. y, on = found.On }
+    -- the player's switch is `Switch` (On is recomputed by the game every tick)
+    found.Switch = (on == true or on == "on" or on == 1)
+    return { switch = x .. "," .. y, on = found.Switch }
 end
 doc("switch", "x, y, on", "Turn the PowerSwitch at x,y on (true) or off (false).", "api.switch(130, 10, false)")
 
