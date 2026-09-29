@@ -217,7 +217,10 @@ req = function(kind, a, b, c, ...)
     if kind == "Construction" then PLANNED[b .. "," .. c] = a
     elseif kind == "PlaceObject" then
         if UTILITY_OBJECT[a] then PLANNED_UTIL[UTILITY_OBJECT[a]][b .. "," .. c] = a
-        else PLANNED_OBJECTS[#PLANNED_OBJECTS + 1] = { a, b, c } end
+        else
+            local okt, t = pcall(function() return World.TimeIndex end)
+            PLANNED_OBJECTS[#PLANNED_OBJECTS + 1] = { a, b, c, okt and tonumber(t) or 0 }
+        end
     end
     return raw_req(kind, a, b, c, ...)
 end
@@ -1073,6 +1076,15 @@ function api.progress()
 end
 doc("progress", "", "What you ordered that is finished vs still pending.", "api.progress()")
 
+-- Every object ordered through this API since the script started, with the game minute of the order
+-- (the easy front end checks them against a save: installed / waiting / silently dropped).
+function api.planned()
+    local out = {}
+    for _, o in ipairs(PLANNED_OBJECTS) do out[#out + 1] = { type = o[1], x = o[2], y = o[3], t = o[4] or 0 } end
+    local okt, now = pcall(function() return World.TimeIndex end)
+    return { objects = out, now = okt and tonumber(now) or 0 }
+end
+
 -- ---- power and water ---------------------------------------------------------------
 -- Measured live: ElectricalCable / PipeLarge / PipeSmall ordered with PlaceObject are
 -- laid by workmen into the utility grid (they show up in the save's Electricity and
@@ -1461,6 +1473,134 @@ end
 doc("intake", "[mode, n]", "Prisoner intake. No args: current mode. Modes: beds (only while free beds - recommended), " ..
     "none, max N (total), perday N, all.", "api.intake(\"beds\")")
 
+-- ---- regime / daily schedule (native, DLL 0.4) ------------------------------------------
+-- Activity codes from the game's enum (start-up table at 0x140df8bf0).
+local ACTIVITIES = { [0] = "Lockup", "Sleep", "Eat", "Shower", "Yard", "Work", "WorkLockdown", "Lockdown",
+                     "FreeTime", "EatLockdown", "ShowerLockdown", "Unspecified" }
+local ACTIVITY_ALIAS = { nothing = 0, lockup = 0, bangup = 0, cell = 0, sleep = 1, eat = 2, food = 2, meal = 2,
+                         shower = 3, wash = 3, yard = 4, exercise = 4, work = 5, lockdown = 7, freetime = 8,
+                         free = 8, unspecified = 11 }
+local function activity_code(a)
+    if tonumber(a) then return math.floor(tonumber(a)) end
+    local k = string.lower(string.gsub(tostring(a or ""), "[%s_%-]", ""))
+    for code, name in pairs(ACTIVITIES) do if string.lower(name) == k then return code end end
+    if ACTIVITY_ALIAS[k] then return ACTIVITY_ALIAS[k] end
+    error("unknown activity '" .. tostring(a) .. "': use Sleep, Eat, Shower, Yard, FreeTime, Work or Lockup", 0)
+end
+
+function api.regime(cat)
+    cat = num(cat or 0, "category")
+    local names = split(native("regime:" .. cat), ",")
+    for i, n in ipairs(names) do if n == "Nothing" then names[i] = "Lockup" end end
+    local counts = {}
+    for _, n in ipairs(names) do counts[n] = (counts[n] or 0) + 1 end
+    local rows = {}
+    for h = 0, 23 do rows[#rows + 1] = string.format("%02d %s", h, names[h + 1] or "?") end
+    return { category = cat, hours = rows, totals = counts,
+             note = "Category 0 is the schedule everyone follows. Prisoners need Sleep ~8h, Eat 2-3x, Shower, " ..
+                    "Yard and FreeTime (Freedom need); Lockup keeps them in cells." }
+end
+doc("regime", "[category]", "The daily schedule, hour by hour (0 = everyone).", "api.regime()")
+
+function api.set_regime(from, to, activity, cat)
+    from, to, cat = num(from, "from hour"), num(to or from, "to hour"), num(cat or 0, "category")
+    if from < 0 or to > 23 or from > to then error("hours are 0..23, from <= to", 0) end
+    local code = activity_code(activity)
+    for h = from, to do native(string.format("setregime:%d %d %d", cat, h, code)) end
+    return api.regime(cat)
+end
+doc("set_regime", "from_hour, to_hour, activity, [category]", "Set hours of the daily schedule to Sleep, Eat, Shower, " ..
+    "Yard, FreeTime, Work or Lockup. Takes effect at the next hour.", "api.set_regime(13, 16, \"FreeTime\")")
+
+-- A schedule that covers every basic need (Sleep 9, Eat 3, Shower 1, Yard 3, FreeTime 7, Lockup 1).
+local REGIME_PRESETS = {
+    balanced = { "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Shower", "Eat", "Yard", "Yard", "Yard",
+                 "Eat", "FreeTime", "FreeTime", "FreeTime", "FreeTime", "Eat", "FreeTime", "FreeTime", "FreeTime",
+                 "Lockup", "Sleep", "Sleep" },
+    work = { "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Sleep", "Shower", "Eat", "Work", "Work", "Work",
+             "Eat", "Work", "Work", "Yard", "FreeTime", "Eat", "FreeTime", "FreeTime", "FreeTime", "Lockup", "Sleep", "Sleep" },
+}
+function api.regime_preset(name)
+    local p = REGIME_PRESETS[string.lower(tostring(name or "balanced"))]
+    if not p then error("presets: balanced, work", 0) end
+    for h = 0, 23 do native(string.format("setregime:0 %d %d", h, activity_code(p[h + 1]))) end
+    return api.regime(0)
+end
+doc("regime_preset", "[balanced|work]", "Replace the whole schedule with a preset that covers every need.",
+    "api.regime_preset(\"balanced\")")
+
+-- ---- camera (native, DLL 0.4) ------------------------------------------------------------
+function api.camera(x, y, zoom)
+    local r
+    if x ~= nil then
+        r = native(string.format("camera:%.2f %.2f%s", tonumber(x), tonumber(y), zoom and string.format(" %.4f", tonumber(zoom)) or ""))
+    else
+        r = native("camera")
+    end
+    local cx, cy, z = string.match(r or "", "^(%-?[%d.]+) (%-?[%d.]+) (%-?[%d.]+)$")
+    return { x = tonumber(cx), y = tonumber(cy), zoom = tonumber(z), note = "zoom = cells per screen pixel" }
+end
+doc("camera", "[x, y, zoom]", "Where the player's view is (cells). With numbers: move the view there.", "api.camera(110, 40)")
+
+-- Frame a rectangle: centre it and zoom so it fits a screen `px_w` x `px_h` pixels wide.
+function api.look_at(x1, y1, x2, y2, px_w, px_h)
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2, "view")
+    px_w, px_h = tonumber(px_w) or 1920, tonumber(px_h) or 1080
+    local z = math.max((x2 - x1 + 3) / px_w, (y2 - y1 + 3) / px_h)
+    return api.camera((x1 + x2 + 1) / 2, (y1 + y2 + 1) / 2, z)
+end
+doc("look_at", "x1, y1, x2, y2", "Move the player's view to show that rectangle (for screenshots).", "api.look_at(95, 38, 120, 48)")
+
+-- ---- removing things --------------------------------------------------------------------
+local function remove_util(kind, x1, y1, x2, y2)
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2)
+    local n = 0
+    for x = x1, x2 do for y = y1, y2 do
+        native((kind == "power" and "rmcable:" or "rmpipe:") .. x .. " " .. y)
+        PLANNED_UTIL[kind][x .. "," .. y] = nil
+        n = n + 1
+    end end
+    return { removed_cells = n, kind = kind, note = "Removed at once (no refund). Things that used it lose " .. kind .. "." }
+end
+function api.remove_cable(x1, y1, x2, y2) return remove_util("power", x1, y1, x2, y2) end
+function api.remove_pipe(x1, y1, x2, y2) return remove_util("water", x1, y1, x2, y2) end
+doc("remove_cable", "x1, y1, x2, y2", "Remove electric cable from a rectangle (e.g. a wrong link between grids).",
+    "api.remove_cable(130, 10, 130, 10)")
+doc("remove_pipe", "x1, y1, x2, y2", "Remove water pipe from a rectangle.", "api.remove_pipe(99, 44, 99, 44)")
+
+-- Dismantle one object near a cell (workmen take it away; the game's own job).
+function api.remove(object_type, x, y)
+    if type(object_type) ~= "string" or object_type == "" then error("object type required", 0) end
+    x, y = rect(x, y, x, y, "position")
+    local done
+    with_anchor(function(anchor, radius)
+        local best, bd
+        for o in pairs(Object.GetNearbyObjects(anchor, object_type, radius) or {}) do
+            if o ~= anchor then
+                local d = math.abs(o.Pos.x - (x + 0.5)) + math.abs(o.Pos.y - (y + 0.5))
+                if d < 3 and (not bd or d < bd) then best, bd = o, d end
+            end
+        end
+        if best then WorkQueue.Request("DismantleObject", best); done = { x = best.Pos.x, y = best.Pos.y } end
+    end)
+    if not done then error("no " .. object_type .. " within 2 cells of " .. x .. "," .. y, 0) end
+    return { dismantling = object_type, at = done, note = "Workmen dismantle it over time." }
+end
+doc("remove", "type, x, y", "Dismantle the object of that type nearest to x,y (within 2 cells).", "api.remove(\"Bench\", 117, 41)")
+
+-- Replace walls/fences in a rectangle with floor (the work queue turns the cell into floor).
+function api.demolish(x1, y1, x2, y2, floor)
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2, "area")
+    floor = floor or "ConcreteFloor"
+    local n = 0
+    for x = x1, x2 do for y = y1, y2 do
+        local m = Object.GetMaterial(x, y) or ""
+        if WALLS[m] or m == "Fence" then req("Construction", floor, x, y); n = n + 1 end
+    end end
+    return { walls_replaced = n, with = floor, note = "Workmen replace each wall/fence cell with " .. floor .. "." }
+end
+doc("demolish", "x1, y1, x2, y2, [floor]", "Knock down walls/fences in a rectangle (they become floor).", "api.demolish(92, 9, 92, 78)")
+
 -- ---- screenshot (native, DLL 0.3.1) -------------------------------------------------
 function api.screenshot()
     return { status = native("screenshot"), note = "The next frame the game draws is saved; check api.screenshot_result()." }
@@ -1613,7 +1753,6 @@ end
 doc("hire", "type, [count]", "Hire staff (Guard, Cook, Workman, Warden; Doctor/Janitor/etc. after research). Costs the game's hire price.",
     "api.hire(\"Guard\", 2)")
 
-function api.camera() error("Camera control is not available from scripts. Ask the human to look.", 0) end
 
 -- ---- introspection -------------------------------------------------------------
 function api.describe(t)
@@ -1630,8 +1769,8 @@ function api.help()
                 "Construction and objects are carried out by workmen and cost money, like a player's orders.",
         functions = HELP,
         native = NATIVE,
-        not_available = NATIVE and { "camera", "regime (daily schedule)" } or
-            { "zoning, saving, pause/resume and research need bridge DLL 0.3", "camera", "regime" },
+        not_available = NATIVE and { "grants (accept them in the game)" } or
+            { "zoning, saving, pause/resume, research, intake, regime, camera need the bridge DLL", "grants" },
         materials = { walls = "BrickWall, ConcreteWall, Fence, PerimeterWall",
                       floors = "ConcreteFloor, WoodenFloor, CeramicFloor, PavingStone",
                       not_materials = "Building, Demolish, CancelJobs... are UI tools and get built as junk" },

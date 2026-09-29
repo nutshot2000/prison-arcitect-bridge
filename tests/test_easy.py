@@ -29,6 +29,15 @@ class FakeBridge:
             return {"hired": args[1], "type": args[0], "cost": 500 * args[1], "money_left": 1000, "arrives_at": {"x": 141, "y": 1}}
         if fn == "overview":
             return {"block": 3, "rows": ["..=", "#_."]}
+        if fn in ("regime", "regime_preset", "set_regime"):
+            return {"category": 0, "hours": [f"{h:02d} Sleep" for h in range(24)], "totals": {"Sleep": 24},
+                    "note": "n"}
+        if fn in ("remove_cable", "remove_pipe"):
+            return {"removed_cells": 4, "note": "gone"}
+        if fn == "demolish":
+            return {"walls_replaced": 2, "note": "floor"}
+        if fn == "remove":
+            return {"at": {"x": 5.5, "y": 6.5}, "note": "dismantled"}
         return {}
 
 
@@ -69,6 +78,28 @@ class EasyTests(unittest.TestCase):
         self.assertIn("room <kind>", e.run("help", []))
         self.assertIn("Sizes that work", e.run("help", ["room"]))
         self.assertIn("Unknown verb", e.run("fly", []))
+
+    def test_regime_forms(self):
+        b = FakeBridge()
+        e = Easy(b)
+        self.assertIn("Sleep 24", e.run("regime", []))
+        e.run("regime", ["balanced"])
+        self.assertEqual(b.calls[-1], ("regime_preset", ("balanced",)))
+        e.run("regime", ["13", "16", "Free", "Time"])
+        self.assertEqual(b.calls[-1], ("set_regime", (13, 16, "Free Time")))
+        with self.assertRaises(EasyError):
+            e.run("regime", ["13", "16"])
+
+    def test_remove_forms(self):
+        b = FakeBridge()
+        e = Easy(b)
+        self.assertIn("4 cells", e.run("remove", ["cable", "1", "2", "3", "4"]))
+        self.assertEqual(b.calls[-1], ("remove_cable", (1, 2, 3, 4)))
+        e.run("remove", ["wall", "1", "1", "1", "5"])
+        self.assertEqual(b.calls[-1][0], "demolish")
+        self.assertIn("Bench", e.run("remove", ["Bench", "5", "6"]))
+        with self.assertRaises(EasyError):
+            e.run("remove", ["pipe", "1", "2"])
 
     def test_look_overview(self):
         out = Easy(FakeBridge()).run("look", [])

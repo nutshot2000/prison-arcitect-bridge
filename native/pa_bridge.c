@@ -27,6 +27,11 @@
  *                                    player last saw) is written to
  *                                    %LOCALAPPDATA%\Introversion\Prison Architect\pa_bridge_screenshot.bmp
  *   Game.DebugOut("\1screenshotresult") -> "pending" | "ok <path>" | "error: ..."
+ *   Game.DebugOut("\1regime[:cat]") -> 24 activity names (cat 0 = base schedule)
+ *   Game.DebugOut("\1setregime:<cat> <hour> <activity>") -> "ok"
+ *   Game.DebugOut("\1camera[:x y [zoom]]") -> "x y zoom" (zoom = cells per pixel)
+ *   Game.DebugOut("\1rmcable:x y") / ("\1rmpipe:x y") -> "ok" (removes that utility cell)
+ *   Game.DebugOut("\1spend:<amount> <label>") -> "ok" (finance ledger entry)
  *   Game.DebugOut("\1intake")       -> "<type> <total> <perday>"
  *   Game.DebugOut("\1intake:<type> [n]") -> sets it (0 none, 1 free beds, 2 max total n, 3 n per day, 4 all)
  *   anything else                   -> treated as print(); sent as a log event
@@ -115,7 +120,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.3.2"
+#define BRIDGE_VERSION "0.4.0"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -430,6 +435,10 @@ static const sig_t NATIVE_SIGS[] = {
     {0x1406ed2c0ULL, {0x85, 0xD2, 0x0F, 0x88, 0x15, 0x01, 0x00, 0x00, 0x57, 0x48}}, /* start research */
     {0x1406ecfc0ULL, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10}}, /* research lookup */
     {0x140665840ULL, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x50}}, /* SetIntakeType */
+    {0x140699600ULL, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10}}, /* SetCable */
+    {0x1403c17d0ULL, {0x48, 0x83, 0xEC, 0x28, 0x85, 0xD2, 0x78, 0x26, 0x45, 0x85}}, /* water cell accessor */
+    {0x140769730ULL, {0x48, 0x89, 0x6C, 0x24, 0x20, 0x41, 0x54, 0x41, 0x56, 0x41}}, /* water neighbour update */
+    {0x1405a0410ULL, {0x48, 0x83, 0xEC, 0x68, 0x48, 0xC7, 0x44, 0x24, 0x30, 0xFE}}, /* finance ledger */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -611,6 +620,142 @@ static int native_intake(void *L, const char *s, size_t n) {
     return push_str(L, out);
 }
 
+/* ---- float parsing / printing for the camera ---- */
+static int parse_float(const char **s, const char *end, float *out) {
+    const char *p = *s; int neg = 0, any = 0; float v = 0, scale = 1; int frac = 0;
+    while (p < end && *p == ' ') p++;
+    if (p < end && *p == '-') { neg = 1; p++; }
+    while (p < end && ((*p >= '0' && *p <= '9') || (*p == '.' && !frac))) {
+        if (*p == '.') { frac = 1; p++; continue; }
+        if (frac) { scale *= 0.1f; v += (*p - '0') * scale; } else v = v * 10 + (*p - '0');
+        p++; any = 1;
+    }
+    *s = p; *out = neg ? -v : v;
+    return any;
+}
+static void sb_float(sbuf *b, float v) {  /* 3 decimals */
+    if (v < 0) { sb_put(b, "-", 1); v = -v; }
+    i64 whole = (i64)v; i64 milli = (i64)((v - (float)whole) * 1000.0f + 0.5f);
+    if (milli >= 1000) { whole++; milli -= 1000; }
+    sb_int(b, whole); sb_put(b, ".", 1);
+    char d[3] = {(char)('0' + milli / 100), (char)('0' + milli / 10 % 10), (char)('0' + milli % 10)};
+    sb_put(b, d, 3);
+}
+
+/* ---- regime (daily schedule) ----
+ * world+0x5a0 = regime: category pointers at +0x48 (count +0x54), category 0 = base schedule
+ * ("None" in the save), others follow it while "Unspecified". A category holds 24 int32 activities
+ * (one per hour) at +0, CurrentActivity @+0x60 (save writer 0x140721f00, owner 0x1406ebbc0).
+ * Activity names: std::string table at 0x140df8bf0 (12 entries, filled at start-up by 0x1400969c0):
+ * 0 Nothing(lock-up) 1 Sleep 2 Eat 3 Shower 4 Yard 5 Work 6 WorkLockdown 7 Lockdown 8 FreeTime
+ * 9 EatLockdown 10 ShowerLockdown 11 Unspecified. */
+#define REGIME_OFF 0x5a0
+#define ACTIVITY_NAMES ((u8 *)0x140df8bf0ULL)
+#define ACTIVITY_COUNT 12
+
+static i32 *regime_category(i32 cat) {
+    u8 *w = get_world();
+    if (!w) return 0;
+    u8 *reg = w + REGIME_OFF;
+    u8 **arr = *(u8 ***)(reg + 0x48);
+    i32 n = *(i32 *)(reg + 0x54);
+    if (!arr || cat < 0 || cat >= n || n > 16) return 0;
+    return (i32 *)arr[cat];
+}
+
+static int native_regime(void *L, const char *s, size_t n) {
+    const char *end = s + n; i32 cat = 0;
+    if (n && !parse_int(&s, end, &cat)) return push_str(L, "error: regime:<category>");
+    i32 *c = regime_category(cat);
+    if (!c) return push_str(L, "error: no such regime category");
+    static char out[1024]; sbuf b = {out, 0, sizeof out};
+    for (int h = 0; h < 24; h++) {
+        if (h) sb_put(&b, ",", 1);
+        i32 a = c[h];
+        if (a >= 0 && a < ACTIVITY_COUNT && *(u64 *)(ACTIVITY_NAMES + 0x20 * a + 0x10) < 64)
+            sb_put(&b, msstr_chars(ACTIVITY_NAMES + 0x20 * a), (size_t)*(u64 *)(ACTIVITY_NAMES + 0x20 * a + 0x10));
+        else sb_int(&b, a);
+    }
+    return push_str(L, out);
+}
+
+static int native_setregime(void *L, const char *s, size_t n) {
+    const char *end = s + n; i32 cat, hour, act;
+    if (!parse_int(&s, end, &cat) || !parse_int(&s, end, &hour) || !parse_int(&s, end, &act))
+        return push_str(L, "error: setregime:<category> <hour 0-23> <activity 0-11>");
+    if (hour < 0 || hour > 23 || act < 0 || act >= ACTIVITY_COUNT) return push_str(L, "error: hour 0-23, activity 0-11");
+    i32 *c = regime_category(cat);
+    if (!c) return push_str(L, "error: no such regime category");
+    c[hour] = act;
+    return push_str(L, "ok");
+}
+
+/* ---- camera (app+0xc8c x, +0xc90 y, +0xc94 zoom = cells per pixel, mirrored at +0xe40;
+ * written the same way by the instant branch of the CamMove handler 0x1401a7370) ---- */
+static int native_camera(void *L, const char *s, size_t n) {
+    u8 *app = *APP_PTR;
+    if (!app || !get_world()) return push_str(L, "error: no prison loaded");
+    if (n) {
+        const char *end = s + n; float x, y, z;
+        if (!parse_float(&s, end, &x) || !parse_float(&s, end, &y)) return push_str(L, "error: camera:<x> <y> [zoom]");
+        *(float *)(app + 0xc8c) = x; *(float *)(app + 0xc90) = y;
+        if (parse_float(&s, end, &z) && z > 0.001f && z < 10.0f) { *(float *)(app + 0xc94) = z; *(float *)(app + 0xe40) = z; }
+    }
+    char out[96]; sbuf b = {out, 0, sizeof out};
+    sb_float(&b, *(float *)(app + 0xc8c)); sb_put(&b, " ", 1);
+    sb_float(&b, *(float *)(app + 0xc90)); sb_put(&b, " ", 1);
+    sb_float(&b, *(float *)(app + 0xc94));
+    return push_str(L, out);
+}
+
+/* ---- removing utilities ----
+ * cable: SetCable(world+0xb38, x, y, level) 0x140699600 (level 0 = none; marks the grid dirty)
+ * pipe: water manager world+0x1628, cell = 0x1403c17d0(mgr,x,y) (0x58 bytes: type @0, hot @4);
+ * the install job 0x140769850 writes the cell, sets mgr+0x148 and runs 0x140769730 on the 3x3. */
+typedef void (*set_cable_t)(void *elec, i32 x, i32 y, u8 level);
+typedef u8 *(*water_cell_t)(void *mgr, i32 x, i32 y);
+typedef void (*water_update_t)(void *mgr, i32 x, i32 y);
+typedef void (*finance_add_t)(void *fin, i32 amount, void *label);
+static const set_cable_t set_cable = (set_cable_t)0x140699600ULL;
+static const water_cell_t water_cell = (water_cell_t)0x1403c17d0ULL;
+static const water_update_t water_update = (water_update_t)0x140769730ULL;
+static const finance_add_t finance_add = (finance_add_t)0x1405a0410ULL;
+
+static int in_map(u8 *w, i32 x, i32 y) { return x >= 0 && y >= 0 && x < *(i32 *)(w + 0x60) && y < *(i32 *)(w + 0x64); }
+
+static int native_rmutil(void *L, const char *s, size_t n, int pipe) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    const char *end = s + n; i32 x, y;
+    if (!parse_int(&s, end, &x) || !parse_int(&s, end, &y)) return push_str(L, "error: <x> <y>");
+    if (!in_map(w, x, y)) return push_str(L, "error: outside the map");
+    if (!pipe) { set_cable(w + 0xb38, x, y, 0); return push_str(L, "ok"); }
+    u8 *mgr = w + 0x1628;
+    u8 *cell = water_cell(mgr, x, y);
+    if (!cell) return push_str(L, "error: no water cell");
+    *(i32 *)cell = 0; cell[4] = 0;
+    mgr[0x148] = 1;
+    for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++)
+        if (in_map(w, x + dx, y + dy)) water_update(mgr, x + dx, y + dy);
+    return push_str(L, "ok");
+}
+
+/* ---- finance ledger: 0x1405a0410(world+0x7c0, amount, label) records income/expense like the
+ * game's own hiring and research charges ("research_<name>") ---- */
+static int native_spend(void *L, const char *s, size_t n) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    const char *end = s + n; i32 amount;
+    if (!parse_int(&s, end, &amount)) return push_str(L, "error: spend:<amount> <label>");
+    while (s < end && *s == ' ') s++;
+    char label[64]; size_t k = 0;
+    while (s < end && k < 63) label[k++] = *s++;
+    label[k] = 0;
+    msstr str; msstr_ref(&str, label, k);
+    finance_add(w + 0x7c0, amount, &str);
+    return push_str(L, "ok");
+}
+
 /* ---- screenshots (read the last shown frame from inside the render loop) ---- */
 typedef void (__stdcall *glReadBuffer_t)(u32);
 typedef void (__stdcall *glReadPixels_t)(i32, i32, i32, i32, u32, u32, void *);
@@ -726,6 +871,12 @@ static int __cdecl bridge_debugout(void *L) {
         }
         if (starts(s, n, "save:")) return native_save(L, s + 5, n - 5);
         if (starts(s, n, "saveresult")) return push_str(L, g_save_pending ? "pending" : g_save_result);
+        if (starts(s, n, "setregime:")) return native_setregime(L, s + 10, n - 10);
+        if (starts(s, n, "regime")) return native_regime(L, s + 6 + (n > 6 && s[6] == ':'), n - 6 - (n > 6 && s[6] == ':'));
+        if (starts(s, n, "camera")) return native_camera(L, s + 6 + (n > 6 && s[6] == ':'), n - 6 - (n > 6 && s[6] == ':'));
+        if (starts(s, n, "rmcable:")) return native_rmutil(L, s + 8, n - 8, 0);
+        if (starts(s, n, "rmpipe:")) return native_rmutil(L, s + 7, n - 7, 1);
+        if (starts(s, n, "spend:")) return native_spend(L, s + 6, n - 6);
         if (starts(s, n, "intake")) return native_intake(L, s + 6 + (n > 6 && s[6] == ':'), n - 6 - (n > 6 && s[6] == ':'));
         if (starts(s, n, "screenshotresult")) return push_str(L, g_shot_pending ? "pending" : g_shot_result);
         if (starts(s, n, "screenshot")) { g_shot_result[0] = 0; g_shot_pending = 1; return push_str(L, "queued"); }

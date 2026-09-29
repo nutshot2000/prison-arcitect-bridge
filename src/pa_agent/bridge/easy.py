@@ -55,6 +55,9 @@ def _counts(d: dict | None) -> str:
     return ", ".join(f"{k} {v}" for k, v in sorted(d.items()))
 
 
+READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
+                   "power", "progress", "problems", "money", "screenshot"}
+
 VERB_HELP = {
     "status": ("status", "Money, clock, paused?, prisoners, beds, staff, rooms you made, construction progress."),
     "look": ("look [x1 y1 x2 y2]",
@@ -111,6 +114,17 @@ VERB_HELP = {
     "switch": ("switch <x> <y> <on|off>", "Turn a PowerSwitch on or off (it splits the power grid)."),
     "screenshot": ("screenshot [scale]", "Picture of what the game shows now, saved as a PNG (scale 2 = half size)."),
     "next": ("next", "What the prison needs next, in order. Start every session with `status` then `next`."),
+    "problems": ("problems", "Everything wrong in one list: rooms missing furniture/size, power, water, orders the\n"
+                             "  game silently dropped, riot risk."),
+    "auto": ("auto", "Safe automatic fixes: intake to beds, unpause, hire guards/cooks to the ratios, hookup, reset\n"
+                     "  a tripped power station. Run it every few turns."),
+    "money": ("money", "Balance, profit today and the change since yesterday."),
+    "regime": ("regime [balanced|work] | regime <from> <to> <activity>",
+               "The daily schedule. `regime balanced` sets one that covers every need; or set hours to Sleep, Eat,\n"
+               "  Shower, Yard, FreeTime, Work or Lockup (e.g. `regime 13 16 FreeTime`). Low Freedom = more FreeTime."),
+    "view": ("view <x1> <y1> <x2> <y2> [scale]", "Move the player's camera to that rectangle and take a screenshot."),
+    "remove": ("remove <Object> <x> <y> | remove cable|pipe|wall <x1> <y1> <x2> <y2>",
+               "Dismantle an object, delete cable/pipe cells at once, or knock walls down (they become floor)."),
     "lua": ("lua <code>", "Experts: run Lua in the game (`return` a value)."),
 }
 
@@ -118,6 +132,8 @@ VERB_HELP = {
 class Easy:
     def __init__(self, bridge: BridgeClient | None = None):
         self.bridge = bridge or BridgeClient(timeout=20)
+        self._snap = None             # (time, parsed save) shared by report/next/rooms/todo in one turn
+        self._screen = (1920, 1080)   # game window size, learned from the last screenshot
 
     # ---- plumbing ---------------------------------------------------------
     def call(self, fn: str, *args: Any, timeout: float | None = None) -> Any:
@@ -131,7 +147,10 @@ class Easy:
         if fn is None:
             return f"Unknown verb '{verb}'.\n" + self.v_help()
         try:
-            return fn(*args)
+            out = fn(*args)
+            if verb not in READ_ONLY_VERBS:
+                self._snap = None  # the prison changed: the next report needs a fresh save
+            return out
         except TypeError as exc:
             usage = VERB_HELP.get(verb, (verb, ""))[0]
             raise EasyError(f"{verb}: wrong arguments ({exc}). Usage: {usage}") from None
@@ -320,6 +339,7 @@ class Easy:
                 if not r.get("ok"):
                     raise EasyError(f"screenshot failed: {r.get('error')}")
                 w, h, rows = read_bmp(Path(r["path"]))
+                self._screen = (w, h)
                 w, h, rows = downscale(w, h, rows, max(1, int(scale)))
                 out = RUNS / "screenshots" / time.strftime("pa-%Y%m%d-%H%M%S.png")
                 return write_png(out, w, h, rows)
@@ -403,16 +423,125 @@ class Easy:
                 f"prisoners {after.get('prisoners_total', 0)}, cell beds {after.get('cell_capacity_total', 0)}")
 
     def v_progress(self) -> str:
-        p = self.call("progress")
-        c = p.get("construction", {})
-        objs = p.get("objects", {})
-        lines = [f"cells: {c.get('finished_since_last_check', 0)} finished since last check, {c.get('still_pending', 0)} waiting"]
-        if c.get("pending_sample"):
-            lines.append("  e.g. " + ", ".join(c["pending_sample"][:6]))
-        if objs:
-            lines.append("objects installed/ordered: " + _counts({k: f"{v['installed']}/{v['ordered']}" for k, v in objs.items()}))
+        """Pending work from the save (survives reloads) + every ordered object checked against the map."""
+        from ..state.report import pending_work, verify_orders
+        root = self.snapshot()
+        pend = pending_work(root)
+        lines = [f"construction jobs waiting: {pend['construction_jobs']}"]
+        if pend["work_queue"]:
+            lines.append("work queue: " + _counts(pend["work_queue"]))
+        try:
+            planned = self.call("planned")
+        except BridgeError:
+            planned = {"objects": [], "now": 0}
+        v = verify_orders(root, planned.get("objects") or [], planned.get("now") or 0)
+        if planned.get("objects"):
+            lines.append(f"ordered objects: {v['installed']} installed, {v['waiting']} still coming, "
+                         f"{len(v['failed'])} never appeared")
+            if v["failed"]:
+                lines.append("  NOT BUILT (probably blocked - wall, other object or outside the room): " +
+                             ", ".join(v["failed"][:12]) + " - order them again somewhere free.")
         lines.append("Nothing moving? The game must be running (`resume`), and building needs money and delivered materials.")
         return "\n".join(lines)
+
+    def v_problems(self) -> str:
+        """Everything that is wrong, in one list: rooms missing things, power/water, dropped orders, game to-do."""
+        from ..state.report import room_problems, situation, verify_orders
+        root = self.snapshot()
+        sit = situation(root)
+        out = [f"ROOM: {p}" for p in room_problems(root)]
+        for st in sit["power_stations"]:
+            if not st["on"]:
+                out.append(f"POWER: station at {st['at']} is OFF (`power`)")
+        for p in sit["pumps"]:
+            if not p["powered"]:
+                out.append(f"WATER: pump at {p['at']} has no power, so there is no water")
+        if sit["unpowered"]:
+            out.append("POWER: without power: " + _counts(sit["unpowered"]) + " (`hookup power`)")
+        try:
+            planned = self.call("planned")
+            v = verify_orders(root, planned.get("objects") or [], planned.get("now") or 0)
+            if v["failed"]:
+                out.append("ORDERS never built: " + ", ".join(v["failed"][:10]))
+        except BridgeError:
+            pass
+        t = sit.get("temperature")
+        if t is not None and t >= 60:
+            out.append(f"RIOT RISK: prison temperature {t:.0f}/100 (`todo`, `report`)")
+        return "\n".join(out) if out else "No problems found: rooms meet their requirements, power and water are on."
+
+    def v_auto(self) -> str:
+        """Safe automatic fixes a small model can run every turn. Never builds rooms or spends big money."""
+        done: list[str] = []
+        s = self.call("state")
+        staff = s.get("staff") or {}
+        money_now = s.get("money") or 0
+        pris = s.get("prisoners_total", 0)
+        if s.get("intake") == "all":
+            self.call("intake", "beds"); done.append("intake set to 'beds' (only prisoners you can house)")
+        if s.get("paused"):
+            self.call("resume", 1); done.append("unpaused (nothing is built while paused)")
+        want_guards = max(3, pris // 6 + 2)
+        g = staff.get("Guard", 0)
+        if g < want_guards and money_now > 5000:
+            n = min(want_guards - g, 4, int((money_now - 3000) // 500))
+            if n > 0:
+                self.call("hire", "Guard", n); done.append(f"hired {n} Guard ({g} -> {g + n}, want {want_guards})")
+        rooms = self.rooms()
+        have = {r["type"] for r in rooms}
+        if "Kitchen" in have and staff.get("Cook", 0) < 2 and money_now > 3000:
+            self.call("hire", "Cook", 2 - staff.get("Cook", 0)); done.append("hired Cooks for the kitchen")
+        try:
+            h = self.v_hookup("both")
+            if "newly connected" in h and not all(" 0 newly" in line for line in h.splitlines()[:2]):
+                done.append("hookup: " + " / ".join(h.splitlines()[:2]))
+        except (EasyError, BridgeError) as exc:
+            done.append(f"hookup skipped: {exc}")
+        util = s.get("utilities") or {}
+        for st in util.get("power_stations") or []:
+            if st.get("on") is False and st.get("overloaded", 0) == 1 and st.get("demand", 0) <= st.get("capacity", 50):
+                self.call("utilities", True); done.append(f"reset tripped station at {st['x']},{st['y']}")
+                break
+        return "\n".join(["auto:"] + [f"- {d}" for d in done]) if done else "auto: nothing to fix automatically."
+
+    def v_money(self) -> str:
+        from ..state.report import money
+        return money(self.snapshot())
+
+    def v_regime(self, *args: str) -> str:
+        """regime | regime balanced|work | regime <from> <to> <activity>"""
+        if not args:
+            r = self.call("regime")
+        elif len(args) == 1:
+            r = self.call("regime_preset", args[0])
+        elif len(args) >= 3:
+            r = self.call("set_regime", *self._ints(args[0], args[1]), " ".join(args[2:]))
+        else:
+            raise EasyError("regime  |  regime balanced  |  regime <from_hour> <to_hour> <activity>")
+        tot = ", ".join(f"{k} {v}" for k, v in sorted(r["totals"].items()))
+        hours = "  ".join(r["hours"])
+        return f"daily schedule (category {r['category']}): {tot}\n{hours}\n{r['note']}"
+
+    def v_view(self, x1: str, y1: str, x2: str, y2: str, scale: str = "2") -> str:
+        """Move the player's view to a rectangle and take a screenshot of it."""
+        self.call("look_at", *self._ints(x1, y1, x2, y2), self._screen[0], self._screen[1])
+        time.sleep(0.3)  # let the game draw a frame at the new position
+        return f"view moved; {self.v_screenshot(scale)}"
+
+    def v_remove(self, what: str, *args: str) -> str:
+        """remove <Object> <x> <y> | remove cable|pipe|wall <x1> <y1> <x2> <y2>"""
+        kind = what.lower()
+        if kind in ("cable", "pipe", "wall", "walls", "fence"):
+            if len(args) != 4:
+                raise EasyError(f"remove {kind} <x1> <y1> <x2> <y2>")
+            fn = {"cable": "remove_cable", "pipe": "remove_pipe"}.get(kind, "demolish")
+            r = self.call(fn, *self._ints(*args))
+            n = r.get("removed_cells", r.get("walls_replaced"))
+            return f"{kind}: {n} cells. {r['note']}"
+        if len(args) != 2:
+            raise EasyError("remove <Object> <x> <y>   or   remove cable|pipe|wall <x1> <y1> <x2> <y2>")
+        r = self.call("remove", what, *self._ints(*args))
+        return f"dismantling the {what} at {r['at']['x']},{r['at']['y']}. {r['note']}"
 
     def save(self, name: str, timeout: float = 20.0) -> str:
         self.call("save", name)
@@ -429,9 +558,15 @@ class Easy:
     def v_save(self, name: str = "agent") -> str:
         return f"saved {self.save(name)}"
 
-    def snapshot(self):
+    def snapshot(self, max_age: float = 3.0):
+        """A parsed save of the running prison, reused for `max_age` seconds so one turn saves once."""
         from ..state import load_prison
-        return load_prison(self.save(SNAPSHOT)).root
+        now = time.monotonic()
+        if self._snap is not None and now - self._snap[0] < max_age:
+            return self._snap[1]
+        root = load_prison(self.save(SNAPSHOT)).root
+        self._snap = (time.monotonic(), root)
+        return root
 
     def rooms(self) -> list[dict]:
         return self._rooms_from(self.snapshot())

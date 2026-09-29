@@ -253,6 +253,10 @@ World.GetCell = function(x, y)
 end
 local pump_fn
 intake_state = "4 0 0"
+regime = {}
+for h = 0, 23 do regime[h] = 0 end
+cam = { 50, 40, 0.05 }
+removed = {}
 Game.DebugOut = function(s, fn)
     if string.sub(s, 1, 1) ~= "\1" then return end
     s = string.sub(s, 2)
@@ -275,6 +279,21 @@ Game.DebugOut = function(s, fn)
         return table.concat(parts, ",")
     end
     local rs = string.match(s, "^research:(.+)$"); if rs then started[rs] = true; return "ok" end
+    local rc = string.match(s, "^regime:(%d+)$")
+    if rc then
+        local names = { [0] = "Nothing", "Sleep", "Eat", "Shower", "Yard", "Work", "WorkLockdown", "Lockdown",
+                        "FreeTime", "EatLockdown", "ShowerLockdown", "Unspecified" }
+        local out = {}
+        for h = 0, 23 do out[#out + 1] = names[regime[h]] end
+        return table.concat(out, ",")
+    end
+    local c, h, a = string.match(s, "^setregime:(%d+) (%d+) (%d+)$")
+    if c then regime[tonumber(h)] = tonumber(a); return "ok" end
+    local cx, cy, cz = string.match(s, "^camera:(%S+) (%S+) ?(%S*)$")
+    if cx then cam = { tonumber(cx), tonumber(cy), tonumber(cz) or cam[3] } end
+    if cx or s == "camera" then return string.format("%.3f %.3f %.3f", cam[1], cam[2], cam[3]) end
+    local ux, uy = string.match(s, "^rm%a+:(%d+) (%d+)$")
+    if ux then removed[#removed + 1] = s; return "ok" end
     if s == "intake" then return intake_state end
     local it, n = string.match(s, "^intake:(%d) ?(%d*)$")
     if it then intake_state = it .. " 0 " .. (n ~= "" and n or "0"); return intake_state end
@@ -319,6 +338,16 @@ for _, c in ipairs(calls) do if c[2] == "DrinkMachine" then drink = true end end
 assert(drink, "a staff room needs a DrinkMachine (game requirement)")
 r = call("furnish", "staffroom", 10, 20, 12, 22); assert(not r.ok and string.find(r.error, "4x4"), r.error)
 r = call("room", "visitation", 20, 20, 30, 28); assert(r.ok and r.result.room == "Visitation" and #r.result.furniture >= 2, J.encode(r))
+-- regime, camera, removal (DLL 0.4)
+r = call("regime"); assert(r.ok and r.result.totals.Lockup == 24 and r.result.hours[1] == "00 Lockup", J.encode(r))
+r = call("set_regime", 13, 16, "free time"); assert(r.ok and r.result.totals.FreeTime == 4 and regime[13] == 8, J.encode(r))
+r = call("set_regime", 5, 3, "Eat"); assert(not r.ok, "from > to must fail")
+r = call("set_regime", 1, 1, "Party"); assert(not r.ok and string.find(r.error, "unknown activity"), r.error)
+r = call("regime_preset", "balanced"); assert(r.ok and r.result.totals.Sleep == 9 and r.result.totals.Eat == 3, J.encode(r))
+r = call("camera"); assert(r.ok and r.result.x == 50, J.encode(r))
+r = call("look_at", 10, 10, 29, 19); assert(r.ok and r.result.x == 20 and r.result.y == 15, J.encode(r))
+r = call("remove_cable", 5, 5, 6, 5); assert(r.ok and r.result.removed_cells == 2 and removed[1] == "rmcable:5 5", J.encode(r))
+r = call("remove_pipe", 7, 7, 7, 7); assert(r.ok and removed[3] == "rmpipe:7 7", J.encode(removed))
 r = call("pause"); assert(r.ok and speed == 0)
 r = call("state"); assert(r.result.paused == true)
 r = call("resume", 2); assert(r.ok and speed == 2)

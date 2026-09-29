@@ -114,6 +114,20 @@ class Server:
         verb("pa_solitary", "solitary", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor "
              "below, (count*2+1) x 5 cells. Needed for punishments; without it the riot risk climbs.",
              {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"], ["x", "y", "count"])
+        verb("pa_problems", "problems", "Everything wrong in one list: rooms missing furniture or size, power, water, "
+             "orders the game silently dropped, riot risk.", {}, [], [])
+        verb("pa_auto", "auto", "Safe automatic fixes: intake to beds, unpause, hire guards/cooks to the ratios, hookup, "
+             "reset a tripped station. Run it every few turns.", {}, [], [])
+        verb("pa_money", "money", "Balance, profit today and the change since yesterday.", {}, [], [])
+        verb("pa_regime", "regime", "The daily schedule. No arguments: show it. preset balanced|work: replace it. Or set "
+             "hours from..to to an activity (Sleep, Eat, Shower, Yard, FreeTime, Work, Lockup).",
+             {"preset": {"type": "string", "enum": ["balanced", "work"]}, "from_hour": INT, "to_hour": INT,
+              "activity": STR}, [], ["preset", "from_hour", "to_hour", "activity"])
+        verb("pa_view", "view", "Move the player's camera to a rectangle and take a screenshot (see pa_screenshot).",
+             RECT, list(RECT), list(RECT))
+        verb("pa_remove", "remove", "Remove things. what = an object type (with x1,y1 = where) to dismantle it, or "
+             "cable / pipe / wall with a rectangle x1,y1,x2,y2.",
+             {"what": STR, **RECT}, ["what", "x1", "y1"], ["what", *RECT])
         verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",

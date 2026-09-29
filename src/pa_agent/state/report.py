@@ -153,6 +153,9 @@ def situation(root: Section) -> dict[str, Any]:
         "balance": root.num("Balance"),
         "temperature": (root.section("Thermometer").num("Temperature") if root.section("Thermometer") else None),
         "todo": todo(root),
+        "room_problems": room_problems(root),
+        "money": money(root),
+        "pending": pending_work(root),
     }
 
 
@@ -186,6 +189,14 @@ def situation_text(s: dict[str, Any]) -> str:
         lines.append(f"ROOMS MISSING SOMETHING: {', '.join(s['rooms_failing'])}")
     if s.get("todo"):
         lines.append("GAME TO-DO: " + " | ".join(s["todo"]))
+    if s.get("money"):
+        lines.append("MONEY " + s["money"])
+    for prob in (s.get("room_problems") or [])[:6]:
+        lines.append("ROOM PROBLEM: " + prob)
+    pend = s.get("pending") or {}
+    if pend.get("construction_jobs") or pend.get("work_queue"):
+        wq = ", ".join(f"{k} {v}" for k, v in (pend.get("work_queue") or {}).items())
+        lines.append(f"WORK WAITING: {pend.get('construction_jobs', 0)} construction jobs; {wq or 'no other jobs'}")
     # plain-language diagnosis
     advice = []
     if any(not p["powered"] for p in s["pumps"]) or not s["pumps"]:
@@ -211,6 +222,127 @@ def situation_text(s: dict[str, Any]) -> str:
 
 INTAKE_MODES = {0: "none", 1: "fill to capacity (beds)", 2: "up to a maximum total", 3: "a number per day",
                 4: "all available"}
+
+# Room requirements as the game defines them (materials.txt "BEGIN Room" blocks): minimum size,
+# indoor/enclosed, and the objects that must be inside (any one of each group).
+ROOM_REQS: dict[str, dict] = {
+    "Cell": {"min": (2, 3), "indoor": True, "objects": [("Bed", "Mattress", "ComfyBed", "BunkBed"), ("Toilet",)]},
+    "HoldingCell": {"min": (5, 5), "indoor": True, "objects": [("Toilet",), ("Bench", "SmallBench")]},
+    "Dormitory": {"min": (2, 3), "indoor": True, "objects": [("Bed", "BunkBed", "Mattress", "ComfyBed"), ("Toilet",)]},
+    "Kitchen": {"objects": [("Cooker",), ("Fridge", "TallFridge"), ("Sink",)]},
+    "Shower": {"objects": [("ShowerHead",)]},
+    "Yard": {"min": (5, 5)},
+    "Deliveries": {"min": (1, 3)},
+    "Garbage": {"min": (1, 3)},
+    "Office": {"min": (4, 4), "indoor": True,
+               "objects": [("OfficeDesk", "FancyDesk"), ("Chair", "OfficeChair", "SwivelChair"), ("FilingCabinet",)]},
+    "Security": {"min": (4, 4), "objects": [("OfficeDesk", "FancyDesk"), ("Chair", "OfficeChair"), ("FilingCabinet",)]},
+    "MedicalWard": {"indoor": True, "objects": [("MedicalBed",)]},
+    "Visitation": {"indoor": True, "objects": [("VisitorTable", "VisitorTableSecure")]},
+    "Staffroom": {"min": (4, 4), "indoor": True,
+                  "objects": [("SofaChairDouble", "SofaChairSingle", "WoodenStool", "MetalStool"), ("DrinkMachine",)]},
+    "Laundry": {"indoor": True, "objects": [("LaundryMachine",), ("LaundryBasket",), ("IroningBoard",)]},
+    "Workshop": {"min": (5, 5), "objects": [("WorkshopSaw",), ("WorkshopPress",), ("Table",)]},
+    "CleaningCupboard": {"min": (3, 3), "indoor": True},
+    "Library": {"min": (5, 5), "indoor": True, "objects": [("LibraryBookshelf",), ("SortingTable",)]},
+    "Classroom": {"min": (5, 5), "objects": [("SchoolDesk",), ("OfficeDesk",)]},
+}
+
+
+def room_problems(root: Section) -> list[str]:
+    """Check every room against ROOM_REQS using the save: size, indoor cells and required objects."""
+    cells = _cells(root)
+    rtypes = _room_types(root)
+    members: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for p, c in cells.items():
+        rid = c.get("Room.i")
+        if isinstance(rid, (int, float)) and rid >= 0:
+            members[int(rid)].append(p)
+    by_cell: dict[tuple[int, int], set[str]] = defaultdict(set)
+    for o in _objects(root):
+        p = _pos(o)
+        if p:
+            by_cell[p].add(str(o.get("Type")))
+    out = []
+    for rid, pts in sorted(members.items()):
+        rtype = rtypes.get(rid, "?")
+        req = ROOM_REQS.get(rtype)
+        if not req:
+            continue
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+        where = f"{rtype} at {min(xs)},{min(ys)}-{max(xs)},{max(ys)}"
+        issues = []
+        if "min" in req:
+            mw, mh = req["min"]
+            if not ((w >= mw and h >= mh) or (w >= mh and h >= mw)):
+                issues.append(f"too small ({w}x{h}, needs {mw}x{mh})")
+        if req.get("indoor") and not all(_true(cells[p].get("Ind")) for p in pts):
+            issues.append("not indoors (needs walls all round; `room` marks rooms indoor)")
+        inside = set().union(*(by_cell.get(p, set()) for p in pts)) if pts else set()
+        for group in req.get("objects", []):
+            if not inside.intersection(group):
+                issues.append(f"missing {group[0]}")
+        if issues:
+            out.append(f"{where}: " + "; ".join(issues))
+    return out
+
+
+def pending_work(root: Section) -> dict[str, Any]:
+    """What workmen still have to do, from the save's work queue (survives reloads, unlike script memory)."""
+    jobs: Counter = Counter()
+    cons = root.section("Construction")
+    cj = cons.section("Jobs") if cons else None
+    construction = len(list(cj.sections())) if cj else 0
+    wq = root.section("WorkQ")
+    items = wq.section("Items") if wq else None
+    for it in items.sections() if items else []:
+        t = str(it.get("Type"))
+        what = it.get("ObjType") or it.get("MatType")
+        jobs[f"{t} {what}" if what not in (None, "") else t] += 1
+    return {"construction_jobs": construction, "work_queue": dict(jobs.most_common(12))}
+
+
+def verify_orders(root: Section, ordered: list[dict], now: float) -> dict[str, Any]:
+    """Ordered objects (from the script) vs what exists in the save.
+
+    installed: an object of that type within 2 cells of the order; queued: an install job for it is in the
+    work queue; failed: neither, and ordered more than 6 game hours ago (the game drops blocked orders silently).
+    """
+    have: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for o in _objects(root):
+        x, y = o.num("Pos.x"), o.num("Pos.y")
+        if x is not None and y is not None:
+            have[str(o.get("Type"))].append((x, y))
+    wq = root.section("WorkQ")
+    items = wq.section("Items") if wq else None
+    queued_types = Counter(str(it.get("ObjType")) for it in (items.sections() if items else []) if it.get("ObjType"))
+    result = {"installed": 0, "waiting": 0, "failed": []}
+    for od in ordered:
+        t, x, y = od["type"], od["x"], od["y"]
+        near = any(abs(px - (x + 0.5)) <= 3 and abs(py - (y + 0.5)) <= 3 for px, py in have.get(t, []))
+        if near:
+            result["installed"] += 1
+        elif queued_types.get(t) or now - od.get("t", now) < 360:
+            result["waiting"] += 1
+        else:
+            result["failed"].append(f"{t}@{x},{y}")
+    return result
+
+
+def money(root: Section) -> str:
+    stats = root.section("StatsTracker")
+    today = stats.section("Today") if stats else None
+    hist = stats.section("History") if stats else None
+    funds = hist.section("Funds") if hist else None
+    days = [(int(d.num("Day", 0) or 0), d.num("Value", 0) or 0) for d in (funds.sections() if funds else [])]
+    parts = [f"balance ${int(root.num('Balance') or 0):,}"]
+    if today is not None and today.num("Profit") is not None:
+        parts.append(f"profit today ${int(today.num('Profit')):,}")
+    if len(days) >= 2:
+        (d1, v1), (d2, v2) = days[-2], days[-1]
+        parts.append(f"day {d1} -> day {d2}: ${int(v2 - v1):+,}")
+    return ", ".join(parts)
 
 
 def todo(root: Section) -> list[str]:

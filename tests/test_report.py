@@ -69,6 +69,15 @@ class ReportTests(unittest.TestCase):
         self.assertIn("TODAY escaped 3", text)
         self.assertIn("OFF", text)
 
+    def test_room_checker(self):
+        from pa_agent.state.report import room_problems
+        probs = room_problems(self.root)
+        # the Cell room is 1 cell with no bed and no toilet
+        self.assertEqual(len(probs), 1)
+        self.assertIn("too small", probs[0])
+        self.assertIn("missing Bed", probs[0])
+        self.assertIn("missing Toilet", probs[0])
+
     def test_utility_map_marks(self):
         m = utility_map(self.root, 0, 0, 10, 10, "both")
         rows = m.splitlines()
