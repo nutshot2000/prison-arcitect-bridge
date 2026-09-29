@@ -239,6 +239,7 @@ World.GetCell = function(x, y)
     return {}
 end
 local pump_fn
+intake_state = "4 0 0"
 Game.DebugOut = function(s, fn)
     if string.sub(s, 1, 1) ~= "\1" then return end
     s = string.sub(s, 2)
@@ -261,6 +262,9 @@ Game.DebugOut = function(s, fn)
         return table.concat(parts, ",")
     end
     local rs = string.match(s, "^research:(.+)$"); if rs then started[rs] = true; return "ok" end
+    if s == "intake" then return intake_state end
+    local it, n = string.match(s, "^intake:(%d) ?(%d*)$")
+    if it then intake_state = it .. " 0 " .. (n ~= "" and n or "0"); return intake_state end
     return "error: unknown native " .. s
 end
 assert(loadstring(src, "world.lua"))()
@@ -284,6 +288,12 @@ r = call("room", "kitchen", 40, 5, 50, 12); assert(r.ok and r.result.zoned and r
 assert(zoned["41,6"] and not zoned["40,5"], "room must zone the inside only")
 r = call("room", "deliveries", 60, 1, 65, 4); assert(r.ok and r.result.built == "outdoor area (no walls)", J.encode(r))
 r = call("cell_block", 30, 50, 2); assert(r.ok and r.result.zoned and zoned["31,51"], J.encode(r))
+r = call("intake"); assert(r.ok and r.result.mode == "all" and r.result.advice, J.encode(r))
+r = call("intake", "beds"); assert(r.ok and r.result.mode == "beds" and intake_state == "1 0 0", J.encode(r))
+r = call("intake", "perday", 3); assert(r.ok and r.result.per_day == 3, J.encode(r))
+r = call("intake", "perday"); assert(not r.ok and string.find(r.error, "number"), r.error)
+r = call("intake", "lots"); assert(not r.ok)
+r = call("state"); assert(r.result.intake == "perday", J.encode(r.result))
 r = call("pause"); assert(r.ok and speed == 0)
 r = call("state"); assert(r.result.paused == true)
 r = call("resume", 2); assert(r.ok and speed == 2)

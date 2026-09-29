@@ -68,6 +68,13 @@ VERB_HELP = {
     "cells": ("cells <x> <y> <count>",
               "A row of 3x3 cells (bed, toilet, jail door, zoned as Cell) with a 2-cell corridor below.\n"
               "  Takes (count*4+1) x 7 cells starting at x,y."),
+    "intake": ("intake [beds|none|max N|perday N|all]",
+               "Prisoner intake. `intake beds` = only accept prisoners while there are free beds (use this).\n"
+               "  No argument: show the current mode. The default sandbox mode `all` floods the prison."),
+    "station": ("station <power|water> <x> <y>",
+                "Order a PowerStation or WaterPumpStation (3x3, top-left at x,y). One power station feeds 50;\n"
+                "  never place two power stations touching. The water pump needs power."),
+    "place": ("place <Object> <x> <y>", "Order one object (PowerSwitch, Bed, Toilet, Light, JailDoor...) at a cell."),
     "fence": ("fence <x1> <y1> <x2> <y2>",
               "Perimeter fence around the whole prison (include deliveries, garbage, power, water).\n"
               "  Where it crosses the road it puts a RoadGate. Without a fence prisoners walk away."),
@@ -233,6 +240,26 @@ class Easy:
                     out[key].append(f"{parts[0]},{parts[1]}")
         return out
 
+    def v_intake(self, mode: str = "", n: str = "") -> str:
+        args = [mode] + ([int(float(n))] if n else []) if mode else []
+        r = self.call("intake", *args)
+        extra = {"max": f" (max {r.get('max_total')})", "perday": f" ({r.get('per_day')} a day)"}.get(r["mode"], "")
+        out = f"intake: {r['mode']}{extra} - {r.get('meaning')}"
+        return out + (f"\n{r['advice']}" if r.get("advice") else "")
+
+    def v_place(self, obj: str, x: str, y: str) -> str:
+        r = self.call("place_object", obj, *self._ints(x, y))
+        return f"ordered {r['object']} at {r['x']},{r['y']} (workmen install it)"
+
+    def v_station(self, kind: str, x: str, y: str) -> str:
+        names = {"power": "PowerStation", "water": "WaterPumpStation"}
+        if kind.lower() not in names:
+            raise EasyError("station power <x> <y>  or  station water <x> <y>")
+        obj = names[kind.lower()]
+        r = self.call("place_object", obj, *self._ints(x, y))
+        return (f"ordered {obj} (3x3, $5000) covering x {r['x']}..{r['x'] + 2}, y {r['y']}..{r['y'] + 2}. "
+                "Keep a gap to other power stations (touching stations trip). Then `hookup`.")
+
     def v_hookup(self, kind: str = "both") -> str:
         known = self.existing_utilities()
         kind = kind.lower()
@@ -390,7 +417,9 @@ class Easy:
         return load_prison(self.save(SNAPSHOT)).root
 
     def rooms(self) -> list[dict]:
-        root = self.snapshot()
+        return self._rooms_from(self.snapshot())
+
+    def _rooms_from(self, root) -> list[dict]:
         sec = root.section("Rooms")
         info = {}
         for r in sec.items_indexed() if sec else []:
@@ -415,51 +444,67 @@ class Easy:
         return "\n".join(lines)
 
     def v_next(self) -> str:
+        """What to do next, in the order that worked live: utilities, fence, guards, beds, food, hygiene, admin."""
+        from ..state.report import situation
         s = self.call("state")
         staff = s.get("staff") or {}
-        try:
-            rooms = self.rooms()
-        except (EasyError, BridgeError):
-            rooms = []
-        have = {}
+        root = self.snapshot()
+        sit = situation(root)
+        rooms = self._rooms_from(root)
+        have: dict[str, int] = {}
         for r in rooms:
             have[r["type"]] = have.get(r["type"], 0) + 1
-        counts = self.call("count", ["PowerStation", "Capacitor", "WaterPumpStation", "Cooker", "ShowerHead"])
-        todo: list[str] = []
-        for prob in (s.get("utilities") or {}).get("problems") or []:
-            todo.append(prob.replace("api.utilities(true)", "`power on`").replace('api.hookup("power")', "`hookup power`"))
+        cells = root.section("Cells")
+        fence = sum(1 for c in cells.sections() if c.get("Mat") == "Fence") if cells else 0
         pris = s.get("prisoners_total", 0)
         beds = s.get("cell_capacity_total", 0)
-        if not have.get("HoldingCell") and not have.get("Cell"):
+        stations = sit["power_stations"]
+        todo: list[str] = []
+        for prob in (s.get("utilities") or {}).get("problems") or []:
+            if "No PowerStation" in prob or "No WaterPumpStation" in prob:
+                continue
+            todo.append(prob.replace("api.utilities(true)", "`power on`").replace('api.hookup("power")', "`hookup power`"))
+        if not stations:
+            todo.append("Power: `station power x y` (3x3, $5000) near where the kitchen will be. One station feeds 50.")
+        if not sit["pumps"]:
+            todo.append("Water: `station water x y` (3x3, $5000); it needs power, so `hookup` after it is built.")
+        if fence < 20:
+            todo.append("Perimeter: `fence x1 y1 x2 y2` round everything incl. Deliveries/Garbage BEFORE prisoners arrive.")
+        if s.get("intake") in ("all", "perday") and beds < pris + 4:
+            todo.insert(0, f"Intake is '{s.get('intake')}' with beds {beds} < prisoners {pris}: `intake beds` NOW so "
+                           "only prisoners you can house arrive.")
+        want_guards = max(3, pris // 6 + 2)
+        if staff.get("Guard", 0) < want_guards:
+            todo.append(f"Guards: have {staff.get('Guard', 0)}, want {want_guards}: `hire Guard {want_guards - staff.get('Guard', 0)}`.")
+        if not have.get("HoldingCell") and not have.get("Cell") and not have.get("Dormitory"):
             todo.append("A HoldingCell so arriving prisoners have somewhere to go: `room holding x1 y1 x2 y2` (about 9x8).")
-        if beds < max(8, pris + 4):
-            todo.append(f"More cells (beds {beds}, prisoners {pris}): `cells x y 6`.")
-        if staff.get("Guard", 0) < max(2, pris // 8 + 2):
-            todo.append(f"Guards: have {staff.get('Guard', 0)}, want {max(2, pris // 8 + 2)}: `hire Guard 2`.")
+        if beds < pris + 4:
+            todo.append(f"Beds {beds} < prisoners {pris}: `room dormitory x1 y1 x2 y2` (15x15 = ~24 beds) or `cells x y 8`.")
         if not have.get("Kitchen"):
-            todo.append("A Kitchen (cookers need power): `room kitchen ...` about 9x8.")
+            todo.append("A Kitchen: `room kitchen x1 y1 x2 y2` (9x8), then `hookup`.")
         if not have.get("Canteen"):
-            todo.append("A Canteen next to the kitchen: `room canteen ...` about 12x10.")
-        if (have.get("Kitchen") or counts.get("Cooker")) and staff.get("Cook", 0) < 2:
+            todo.append("A Canteen next to the kitchen: `room canteen ...` (12x10).")
+        if (have.get("Kitchen")) and staff.get("Cook", 0) < 2:
             todo.append("Cooks for the kitchen: `hire Cook 2`.")
-        if counts.get("Cooker") and not counts.get("PowerStation"):
-            todo.append("Power: cookers need electricity. Order a PowerStation (3x3) and a Capacitor. "
-                        "Cables cannot be laid from scripts yet: ask the human to connect them.")
+        if sit["unpowered"] or any(n in ("Hygiene", "Bladder", "Bowels") for n in sit["complaining_about"]):
+            todo.append("Objects without power/water or prisoners needing toilets/showers: `hookup`, then `utilmap`.")
         if not have.get("Shower"):
-            todo.append("A Shower room (needs water): `room shower ...` about 7x6.")
+            todo.append("A Shower room (needs water): `room shower ...` (7x6).")
         if not have.get("Yard"):
-            todo.append("A Yard: `room yard ...` about 16x12 (outdoors, no walls).")
+            todo.append("A Yard: `room yard ...` (16x12, outdoors).")
+        if sit["staff_hurt"] or sit["staff_down"]:
+            todo.append("Injured staff: a Doctor needs `research Health` (Warden + Office), then `hire Doctor` and "
+                        "`room infirmary ...`.")
         if not staff.get("Warden"):
-            todo.append("A Warden unlocks research: `hire Warden`, then `room office ...` for them.")
+            todo.append("A Warden unlocks research: `hire Warden`, then `room office ...` (6x6).")
         elif not have.get("Office"):
             todo.append("An Office for the Warden: `room office x1 y1 x2 y2` (6x6).")
-        broken = [r for r in rooms if r["missing_something"]]
-        for r in broken[:3]:
+        for r in [r for r in rooms if r["missing_something"]][:2]:
             todo.append(f"{r['type']} at {r['x1']},{r['y1']} is missing something (furniture not built yet? power? water?).")
         if not todo:
-            todo.append("The basics are in place. `wait 120`, then `status`. Consider research (`research`).")
-        head = f"{s.get('clock')}, money ${_n(s.get('money'))}. Do these in order:"
-        return "\n".join([head] + [f"{i}. {t}" for i, t in enumerate(todo[:6], 1)])
+            todo.append("The basics are in place. `wait 120`, then `report`. Consider research (`research`).")
+        head = f"{s.get('clock')}, money ${_n(s.get('money'))}, prisoners {pris}, beds {beds}. Do these in order:"
+        return "\n".join([head] + [f"{i}. {t}" for i, t in enumerate(todo[:7], 1)])
 
     def v_lua(self, *code: str) -> str:
         import json

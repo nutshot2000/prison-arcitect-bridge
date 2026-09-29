@@ -27,6 +27,8 @@
  *                                    player last saw) is written to
  *                                    %LOCALAPPDATA%\Introversion\Prison Architect\pa_bridge_screenshot.bmp
  *   Game.DebugOut("\1screenshotresult") -> "pending" | "ok <path>" | "error: ..."
+ *   Game.DebugOut("\1intake")       -> "<type> <total> <perday>"
+ *   Game.DebugOut("\1intake:<type> [n]") -> sets it (0 none, 1 free beds, 2 max total n, 3 n per day, 4 all)
  *   anything else                   -> treated as print(); sent as a log event
  *
  * Native actions call the game's own code paths, found by disassembly of
@@ -113,7 +115,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.3.1"
+#define BRIDGE_VERSION "0.3.2"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -427,6 +429,7 @@ static const sig_t NATIVE_SIGS[] = {
     {0x14045f910ULL, {0x48, 0x83, 0xEC, 0x28, 0x48, 0x8B, 0x05, 0xE5, 0x7F, 0x8F}}, /* Game.GetGameSpeed (world+0x88) */
     {0x1406ed2c0ULL, {0x85, 0xD2, 0x0F, 0x88, 0x15, 0x01, 0x00, 0x00, 0x57, 0x48}}, /* start research */
     {0x1406ecfc0ULL, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10}}, /* research lookup */
+    {0x140665840ULL, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x50}}, /* SetIntakeType */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -577,6 +580,37 @@ static int native_setspeed(void *L, const char *s, size_t n) {
     return push_str(L, "ok");
 }
 
+/* ---- prisoner intake (Reports > Intake) ----
+ * Intake object = world+0x1778; IntakeType @+0x2c8, IntakeNumTotal @+0x2cc, IntakeNumPerDay @+0x2d0
+ * (save writer 0x14066b1b0). Daily decision 0x140665020: type 0 = none, 1 = only while there are free
+ * beds, 2 = until the prison holds NumTotal, 3 = NumPerDay each day, 4 = everything offered.
+ * SetIntakeType 0x140665840 writes the type, flags the change and recomputes. */
+#define INTAKE_OFF 0x1778
+typedef void (*set_intake_type_t)(void *intake, i32 type);
+static const set_intake_type_t set_intake_type = (set_intake_type_t)0x140665840ULL;
+
+static int native_intake(void *L, const char *s, size_t n) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *in = w + INTAKE_OFF;
+    const char *end = s + n;
+    i32 type, num = -1;
+    if (n) {
+        if (!parse_int(&s, end, &type) || type < 0 || type > 4) return push_str(L, "error: intake type must be 0..4");
+        if (s < end && !parse_int(&s, end, &num)) return push_str(L, "error: bad number");
+        if (num >= 0) {
+            if (type == 2) *(i32 *)(in + 0x2cc) = num;
+            if (type == 3) *(i32 *)(in + 0x2d0) = num;
+        }
+        set_intake_type(in, type);
+    }
+    char out[64]; sbuf b = {out, 0, sizeof out};
+    sb_int(&b, *(i32 *)(in + 0x2c8)); sb_put(&b, " ", 1);
+    sb_int(&b, *(i32 *)(in + 0x2cc)); sb_put(&b, " ", 1);
+    sb_int(&b, *(i32 *)(in + 0x2d0));
+    return push_str(L, out);
+}
+
 /* ---- screenshots (read the last shown frame from inside the render loop) ---- */
 typedef void (__stdcall *glReadBuffer_t)(u32);
 typedef void (__stdcall *glReadPixels_t)(i32, i32, i32, i32, u32, u32, void *);
@@ -692,6 +726,7 @@ static int __cdecl bridge_debugout(void *L) {
         }
         if (starts(s, n, "save:")) return native_save(L, s + 5, n - 5);
         if (starts(s, n, "saveresult")) return push_str(L, g_save_pending ? "pending" : g_save_result);
+        if (starts(s, n, "intake")) return native_intake(L, s + 6 + (n > 6 && s[6] == ':'), n - 6 - (n > 6 && s[6] == ':'));
         if (starts(s, n, "screenshotresult")) return push_str(L, g_shot_pending ? "pending" : g_shot_result);
         if (starts(s, n, "screenshot")) { g_shot_result[0] = 0; g_shot_pending = 1; return push_str(L, "queued"); }
         if (starts(s, n, "researchlist")) return native_researchlist(L);

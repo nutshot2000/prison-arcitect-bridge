@@ -484,6 +484,7 @@ function api.state()
         staff = api.staff().by_type,
         zones_made = api.zones(),
         utilities = (function() local ok, u = pcall(api.utilities); return ok and u or nil end)(),
+        intake = (function() local ok, i = pcall(api.intake); return ok and i.mode or nil end)(),
         tips = "Use api.overview() to see the layout and api.help() for what you can do.",
     }
 end
@@ -1337,6 +1338,32 @@ function api.save_result()
     if string.sub(r or "", 1, 3) == "ok " then return { done = true, ok = true, path = string.sub(r, 4) } end
     return { done = r ~= "", ok = false, error = r }
 end
+
+-- ---- prisoner intake (native, DLL 0.3.2) -----------------------------------------------
+-- The game's own intake modes (Reports > Intake), from its daily decision code.
+local INTAKE_MODES = { [0] = "none", [1] = "beds", [2] = "max", [3] = "perday", [4] = "all" }
+local INTAKE_TEXT = { none = "no new prisoners", beds = "only while there are free beds",
+                      max = "until the prison holds N prisoners", perday = "N prisoners a day",
+                      all = "everyone the state sends (floods the prison)" }
+
+function api.intake(mode, n)
+    local cmd = "intake"
+    if mode ~= nil then
+        mode = string.lower(tostring(mode))
+        local t
+        for k, v in pairs(INTAKE_MODES) do if v == mode then t = k end end
+        if t == nil then error("intake mode must be none, beds, max, perday or all", 0) end
+        if (mode == "max" or mode == "perday") and not tonumber(n) then error(mode .. " needs a number", 0) end
+        cmd = "intake:" .. t .. (tonumber(n) and (" " .. math.floor(tonumber(n))) or "")
+    end
+    local r = native(cmd)
+    local t, total, perday = string.match(r or "", "^(%-?%d+) (%-?%d+) (%-?%d+)$")
+    local m = INTAKE_MODES[tonumber(t)] or "?"
+    return { mode = m, meaning = INTAKE_TEXT[m], max_total = tonumber(total), per_day = tonumber(perday),
+             advice = m == "all" and "Switch to api.intake(\"beds\") so only prisoners you can house arrive." or nil }
+end
+doc("intake", "[mode, n]", "Prisoner intake. No args: current mode. Modes: beds (only while free beds - recommended), " ..
+    "none, max N (total), perday N, all.", "api.intake(\"beds\")")
 
 -- ---- screenshot (native, DLL 0.3.1) -------------------------------------------------
 function api.screenshot()

@@ -99,6 +99,16 @@ class Server:
              {"kind": {"type": "string", "enum": ["both", "power", "water"]}, **RECT}, [], ["kind", *RECT])
         verb("pa_switch", "switch", "Turn the PowerSwitch at x,y on or off.",
              {"x": INT, "y": INT, "state": {"type": "string", "enum": ["on", "off"]}}, ["x", "y", "state"], ["x", "y", "state"])
+        verb("pa_fence", "fence", "Perimeter fence around the whole prison (include deliveries, garbage, stations). "
+             "Road crossings get RoadGates. Build it BEFORE prisoners arrive.", RECT, list(RECT), list(RECT))
+        verb("pa_station", "station", "Order a PowerStation (kind power) or WaterPumpStation (kind water), 3x3 with "
+             "top-left at x,y. One power station feeds 50; power stations must not touch each other.",
+             {"kind": {"type": "string", "enum": ["power", "water"]}, "x": INT, "y": INT}, ["kind", "x", "y"],
+             ["kind", "x", "y"])
+        verb("pa_intake", "intake", "Prisoner intake. mode beds = only accept prisoners while there are free beds "
+             "(recommended; set it first). none, max (n = total), perday (n a day), all (floods the prison). "
+             "No mode: show the current one.",
+             {"mode": {"type": "string", "enum": ["beds", "none", "max", "perday", "all"]}, "n": INT}, [], ["mode", "n"])
         verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",
