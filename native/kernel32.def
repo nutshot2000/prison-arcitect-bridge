@@ -19,3 +19,4 @@ GetEnvironmentVariableA
 CreateFileA
 WriteFile
 DisableThreadLibraryCalls
+GetCurrentThreadId

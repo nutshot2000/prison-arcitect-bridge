@@ -1,0 +1,80 @@
+import unittest
+
+from pa_agent.bridge.client import BridgeError
+from pa_agent.bridge.easy import Easy, EasyError, explain
+
+STATE = {"clock": "day 2 08:05", "paused": False, "speed": 1, "money": 12345, "map": {"w": 150, "h": 120},
+         "prisoners_total": 3, "prisoners": {"Normal": 3}, "cell_capacity_total": 0, "cell_capacity": {},
+         "staff": {"Workman": 8}, "zones_made": [], "native": True}
+
+
+class FakeBridge:
+    def __init__(self, fail=None):
+        self.calls = []
+        self.fail = fail
+
+    def call(self, fn, *args, timeout=None):
+        self.calls.append((fn, args))
+        if self.fail and fn == self.fail[0]:
+            raise BridgeError(self.fail[1])
+        if fn == "state":
+            return dict(STATE)
+        if fn == "progress":
+            return {"construction": {"still_pending": 4, "finished_since_last_check": 2, "pending_sample": ["BrickWall@1,1"]},
+                    "objects": {"Bed": {"installed": 1, "ordered": 2}}}
+        if fn == "room":
+            return {"room": "Kitchen", "built": "walls, floor and a Door at 5,9", "inside": {"x1": 1, "y1": 1, "x2": 8, "y2": 8},
+                    "furniture": ["Cooker@1,1"], "zoned": True, "note": "Kitchen note."}
+        if fn == "hire":
+            return {"hired": args[1], "type": args[0], "cost": 500 * args[1], "money_left": 1000, "arrives_at": {"x": 141, "y": 1}}
+        if fn == "overview":
+            return {"block": 3, "rows": ["..=", "#_."]}
+        return {}
+
+
+class EasyTests(unittest.TestCase):
+    def test_status_text(self):
+        out = Easy(FakeBridge()).run("status", [])
+        self.assertIn("money $12,345", out)
+        self.assertIn("prisoners 3", out)
+        self.assertIn("Bed 1/2", out)
+
+    def test_room_passes_ints_and_default_door(self):
+        b = FakeBridge()
+        out = Easy(b).run("room", ["kitchen", "0", "0", "9", "9"])
+        self.assertEqual(b.calls[-1], ("room", ("kitchen", 0, 0, 9, 9, "south")))
+        self.assertIn("zoned Kitchen", out)
+
+    def test_hire_count(self):
+        b = FakeBridge()
+        out = Easy(b).run("hire", ["Guard", "2"])
+        self.assertEqual(b.calls[-1], ("hire", ("Guard", 2)))
+        self.assertIn("hired 2 Guard", out)
+
+    def test_errors_get_hints(self):
+        with self.assertRaises(EasyError) as cm:
+            Easy(FakeBridge(fail=("hire", "Doctor needs the Health research first"))).run("hire", ["Doctor"])
+        self.assertIn("HINT", str(cm.exception))
+        self.assertIn("research", explain("x", "Janitor needs the Cleaning research first"))
+
+    def test_wrong_arguments_show_usage(self):
+        with self.assertRaises(EasyError) as cm:
+            Easy(FakeBridge()).run("room", ["kitchen"])
+        self.assertIn("Usage: room <kind>", str(cm.exception))
+        with self.assertRaises(EasyError):
+            Easy(FakeBridge()).run("room", ["kitchen", "a", "b", "c", "d"])
+
+    def test_help_and_unknown(self):
+        e = Easy(FakeBridge())
+        self.assertIn("room <kind>", e.run("help", []))
+        self.assertIn("Sizes that work", e.run("help", ["room"]))
+        self.assertIn("Unknown verb", e.run("fly", []))
+
+    def test_look_overview(self):
+        out = Easy(FakeBridge()).run("look", [])
+        self.assertIn("1 char = 3x3", out)
+        self.assertIn("#_.", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

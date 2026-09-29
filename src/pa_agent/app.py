@@ -51,6 +51,14 @@ def parser() -> argparse.ArgumentParser:
     lua.add_argument("code", help="Lua code; use return to get a value, or @file.lua")
     lua.add_argument("--timeout", type=float, default=10.0)
     commands.add_parser("bridge", help="Show live bridge status (DLL, in-game runtime, game time)")
+    commands.add_parser("reload-mod", help="Developers: load mod/ai_bridge/data/world.lua into the running game "
+                                           "(no prison reload; ordered-work tracking restarts)")
+    play = commands.add_parser("play", help="Easy verbs for playing (status, next, look, room, hire...); 'play help'")
+    play.add_argument("verb", nargs="?", default="help")
+    play.add_argument("args", nargs="*")
+    call = commands.add_parser("call", help="Call one api.* helper: call <fn> [args...] (numbers/JSON parsed)")
+    call.add_argument("fn")
+    call.add_argument("args", nargs="*")
     commands.add_parser("mcp", help="Run the MCP server on stdio for AI agents")
     test = commands.add_parser("input-test", help="Default: move pointer to client centre, no clicks")
     test.add_argument("--key", choices=("escape", "space"), help="Optionally test one key; changes game UI/state")
@@ -124,6 +132,33 @@ def main(argv=None) -> int:
             else:
                 code = Path(args.code[1:]).read_text(encoding="utf-8") if args.code.startswith("@") else args.code
                 result = {"result": client.exec(code, args.timeout), "logs": client.drain_logs()}
+        elif args.command == "play":
+            from .bridge.easy import Easy, EasyError
+            try:
+                print(Easy().run(args.verb, args.args))
+                return 0
+            except EasyError as exc:
+                print(f"ERROR: {exc}")
+                return 2
+        elif args.command == "reload-mod":
+            from .bridge import BridgeClient
+            src = (Path(__file__).resolve().parents[2] / "mod" / "ai_bridge" / "data" / "world.lua").read_text(encoding="utf-8")
+            if "]====]" in src:
+                raise ValueError("world.lua contains ]====], cannot embed it")
+            code = ("local G = getfenv(Update)\n"
+                    f"local f = assert(loadstring([====[{src}]====], 'world.lua'))\n"
+                    "setfenv(f, G); f(); return G.PA_BRIDGE.VERSION")
+            client = BridgeClient(timeout=20)
+            result = {"reloaded": client.exec(code)}
+            result["state"] = client.call("state")
+        elif args.command == "call":
+            from .bridge import BridgeClient
+            def parse(v: str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return v
+            result = BridgeClient(timeout=20).call(args.fn, *[parse(a) for a in args.args])
         elif args.command == "state":
             result = read_state(args.save, args.full)
         else:

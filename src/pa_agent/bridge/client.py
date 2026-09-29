@@ -138,8 +138,12 @@ class BridgeClient:
                 if not st.get("lua_seen"):
                     hint = " The in-game runtime has not connected: load a prison with the 'AI Bridge' mod enabled."
                 elif age is not None and age > 2000:
-                    hint = (f" The in-game script has not polled for {age} ms; the game is probably paused "
-                            "or in a menu (scripts only run while the simulation runs).")
+                    if st.get("pump") == "ready":
+                        hint = (f" The in-game script has not run for {age} ms although the bridge can serve a paused "
+                                "game: the game is probably in a menu, loading, or minimised.")
+                    else:
+                        hint = (f" The in-game script has not polled for {age} ms; the game is probably paused "
+                                "or in a menu (bridge DLL before 0.3 only works while the game runs).")
             except BridgeError:
                 pass
             raise BridgeTimeout("timed out waiting for the game." + hint) from None

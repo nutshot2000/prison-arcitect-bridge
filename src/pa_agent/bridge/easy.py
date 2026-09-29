@@ -1,0 +1,395 @@
+"""Easy front end: one verb per call, short plain-text answers, hints on errors.
+
+Used by `pa-agent play <verb>`, `prison.ps1 <verb>` and the pa_* MCP tools, so a
+small model only has to read a few lines per step. Everything here goes through
+the api.* helpers in the mod's world.lua.
+"""
+from __future__ import annotations
+
+import re
+import time
+from typing import Any, Callable
+
+from .client import BridgeClient, BridgeError
+
+SNAPSHOT = "pa_agent_snapshot"
+
+# error text -> what to do about it
+HINTS: list[tuple[str, str]] = [
+    (r"outside the map", "Coordinates are cells: x 0..width-1, y 0..height-1. Run `status` for the map size."),
+    (r"needs bridge DLL 0\.3|DLL 0\.3", "Install native/bin/GLU32.dll (scripts/install_bridge.ps1) and restart the game."),
+    (r"needs the (\w+) research", "Start it with `research <name>`; it needs a Warden with an Office."),
+    (r"is researched by the (\w+)", "Hire that person first (`hire <type>`), build them an `room office`, then retry."),
+    (r"costs \$", "Not enough money. `wait` for the daily income, or pick something cheaper."),
+    (r"only have one", "That staff type is unique. You already have one."),
+    (r"unknown room type|unknown room kind", "Run `help room` for the kinds, or `roomtypes` for every zone type."),
+    (r"timed out.*runtime has not connected", "Load a prison with the 'AI Bridge' mod enabled (Extras > Mods)."),
+    (r"timed out", "The game did not answer: it may be loading, in the main menu, or closed."),
+    (r"Cannot reach the bridge", "Start Prison Architect (with GLU32.dll installed) and load a prison."),
+    (r"no free .* area", "Try a smaller size, or `look` for empty ground and give coordinates yourself."),
+]
+
+
+class EasyError(RuntimeError):
+    pass
+
+
+def explain(verb: str, err: str) -> str:
+    msg = f"{verb} failed: {err}"
+    for pattern, hint in HINTS:
+        if re.search(pattern, err, re.IGNORECASE):
+            return f"{msg}\n  HINT: {hint}"
+    return msg
+
+
+def _n(v: Any) -> str:
+    return f"{int(v):,}" if isinstance(v, (int, float)) else str(v)
+
+
+def _counts(d: dict | None) -> str:
+    if not d:
+        return "none"
+    return ", ".join(f"{k} {v}" for k, v in sorted(d.items()))
+
+
+VERB_HELP = {
+    "status": ("status", "Money, clock, paused?, prisoners, beds, staff, rooms you made, construction progress."),
+    "look": ("look [x1 y1 x2 y2]",
+             "No numbers: small picture of the whole map (1 char = 3x3 cells). With numbers: exact cells.\n"
+             "  # wall  _ floor  . ground  = road  , paving  + ordered, not built yet"),
+    "space": ("space <w> <h> [near_x near_y]", "Find empty ground for a w x h building (walls included)."),
+    "room": ("room <kind> <x1> <y1> <x2> <y2> [door_side]",
+             "Build a whole room: walls + floor + door + furniture + zone. The rectangle INCLUDES the walls.\n"
+             "  kinds: holding cell kitchen canteen shower yard office staffroom infirmary storage deliveries garbage\n"
+             "  door_side: north south east west (default south). Yards/deliveries/garbage have no walls.\n"
+             "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6."),
+    "cells": ("cells <x> <y> <count>",
+              "A row of 3x3 cells (bed, toilet, jail door, zoned as Cell) with a 2-cell corridor below.\n"
+              "  Takes (count*4+1) x 7 cells starting at x,y."),
+    "fence": ("fence <x1> <y1> <x2> <y2>",
+              "Perimeter fence around the whole prison (include deliveries, garbage, power, water).\n"
+              "  Where it crosses the road it puts a RoadGate. Without a fence prisoners walk away."),
+    "hookup": ("hookup [power|water|both]",
+               "Lay cable/pipes from every cooker, fridge, light, pump (power) and toilet, shower, sink (water)\n"
+               "  to the nearest station or line. Needs a PowerStation and a WaterPumpStation first."),
+    "power": ("power [on]",
+              "Power stations (on/off, demand vs capacity 50 each) and whether water pumps have power.\n"
+              "  `power on` switches tripped stations back on - add another PowerStation first or it trips again."),
+    "zone": ("zone <RoomType> <x1> <y1> <x2> <y2>", "Zone a rectangle (use the INSIDE of a room). `roomtypes` lists types."),
+    "unzone": ("unzone <x1> <y1> <x2> <y2>", "Remove zoning."),
+    "roomtypes": ("roomtypes", "Every room type the game knows."),
+    "rooms": ("rooms", "Every room in the prison with its type and whether the game says it is missing something."),
+    "hire": ("hire <type> [count]",
+             "Hire staff. Guard Cook Workman Warden are always available; Doctor Janitor Gardener Foreman Chief\n"
+             "  Accountant Psychologist Lawyer DogHandler ArmedGuard need research first."),
+    "research": ("research [name]", "No name: list research. With a name: start it (needs a Warden with an Office)."),
+    "pause": ("pause", "Pause the game. You can still plan, order building, zone and hire while paused."),
+    "resume": ("resume [speed]", "Unpause. speed 1 = normal, 2-5 = faster."),
+    "wait": ("wait [seconds] [speed]", "Let the game run (default 60 s at speed 3), then report what got built."),
+    "progress": ("progress", "What you ordered that is built vs still waiting."),
+    "save": ("save [name]", "Save the prison (saves/<name>.prison)."),
+    "next": ("next", "What the prison needs next, in order. Start every session with `status` then `next`."),
+    "lua": ("lua <code>", "Experts: run Lua in the game (`return` a value)."),
+}
+
+
+class Easy:
+    def __init__(self, bridge: BridgeClient | None = None):
+        self.bridge = bridge or BridgeClient(timeout=20)
+
+    # ---- plumbing ---------------------------------------------------------
+    def call(self, fn: str, *args: Any, timeout: float | None = None) -> Any:
+        return self.bridge.call(fn, *args, timeout=timeout)
+
+    def run(self, verb: str, args: list[str]) -> str:
+        verb = verb.lower()
+        if verb == "help":
+            return self.v_help(args[0] if args else None)
+        fn: Callable[..., str] | None = getattr(self, f"v_{verb}", None)
+        if fn is None:
+            return f"Unknown verb '{verb}'.\n" + self.v_help()
+        try:
+            return fn(*args)
+        except TypeError as exc:
+            usage = VERB_HELP.get(verb, (verb, ""))[0]
+            raise EasyError(f"{verb}: wrong arguments ({exc}). Usage: {usage}") from None
+        except BridgeError as exc:
+            raise EasyError(explain(verb, str(exc))) from None
+
+    @staticmethod
+    def _ints(*vals: Any) -> list[int]:
+        try:
+            return [int(float(v)) for v in vals]
+        except (TypeError, ValueError):
+            raise EasyError(f"expected whole numbers, got {list(vals)}") from None
+
+    # ---- verbs ------------------------------------------------------------
+    def v_help(self, verb: str | None = None) -> str:
+        if verb and verb in VERB_HELP:
+            usage, text = VERB_HELP[verb]
+            return f"{usage}\n  {text}"
+        lines = ["Prison Architect - easy verbs (coordinates are map cells, x right, y down):"]
+        lines += [f"  {VERB_HELP[v][0]:<44} {VERB_HELP[v][1].splitlines()[0]}" for v in VERB_HELP]
+        lines.append("Start with: status, next, look. `help <verb>` for details.")
+        return "\n".join(lines)
+
+    def v_status(self) -> str:
+        s = self.call("state")
+        p = self.call("progress")
+        speed = s.get("speed")
+        run = "PAUSED" if s.get("paused") else f"running x{speed:g}" if isinstance(speed, (int, float)) else "running"
+        lines = [
+            f"{s.get('clock')}  ({run})  money ${_n(s.get('money'))}  map {s['map']['w']}x{s['map']['h']}",
+            f"prisoners {s.get('prisoners_total', 0)} ({_counts(s.get('prisoners'))})  "
+            f"cell beds {s.get('cell_capacity_total', 0)}",
+            f"staff: {_counts(s.get('staff'))}",
+        ]
+        zones = s.get("zones_made") or []
+        if zones:
+            lines.append("zones you made: " + "; ".join(zones))
+        c = p.get("construction", {})
+        objs = p.get("objects", {})
+        waiting = {k: f"{v['installed']}/{v['ordered']}" for k, v in objs.items() if v["installed"] < v["ordered"]}
+        lines.append(f"construction: {c.get('still_pending', 0)} cells waiting"
+                     + (f"; objects installed/ordered: {_counts(waiting)}" if waiting else ""))
+        u = s.get("utilities") or {}
+        if u:
+            pumps = u.get("pumps") or []
+            lines.append(f"power: {len(u.get('power_stations') or [])} station(s), demand {u.get('demand', 0):g}/"
+                         f"{u.get('capacity', 0):g}; water pumps powered: "
+                         f"{sum(1 for p in pumps if p.get('powered'))}/{len(pumps)}")
+            for prob in u.get("problems") or []:
+                lines.append("PROBLEM: " + prob)
+        if not s.get("native"):
+            lines.append("NOTE: bridge DLL 0.3 not active: no zoning/save/pause/research. Update GLU32.dll.")
+        if s.get("paused"):
+            lines.append("NOTE: paused - nothing gets built until `resume`.")
+        return "\n".join(lines)
+
+    def v_look(self, *xy: str) -> str:
+        if xy:
+            if len(xy) != 4:
+                raise EasyError("look takes no numbers (whole map) or 4 numbers: x1 y1 x2 y2")
+            m = self.call("map", *self._ints(*xy))
+            head = f"cells x {m['origin']['x']}..{m['origin']['x'] + m['size']['w'] - 1}, " \
+                   f"y {m['origin']['y']}..{m['origin']['y'] + m['size']['h'] - 1}"
+            width = len(str(m["origin"]["y"] + m["size"]["h"]))
+            body = [f"{'':>{width}} {m['x_ruler']}"]
+            body += [f"{m['origin']['y'] + i:>{width}} {row}" for i, row in enumerate(m["rows"])]
+            legend = "; ".join(f"{k} {v}" for k, v in sorted(m["legend"].items()))
+            return "\n".join([head, *body, "legend: " + legend])
+        o = self.call("overview")
+        b = o["block"]
+        ruler = "".join(str((i * b // 10) % 10) if (i * b) % 10 < b else " " for i in range(len(o["rows"][0])))
+        body = [f"     {ruler}   (x/10)"]
+        body += [f"{i * b:>4} {row}" for i, row in enumerate(o["rows"])]
+        return "\n".join([f"whole map, 1 char = {b}x{b} cells; left numbers are y. "
+                          "# wall _ floor . ground = road , paving + ordered", *body])
+
+    def v_space(self, w: str, h: str, near_x: str | None = None, near_y: str | None = None) -> str:
+        args = self._ints(w, h) + (self._ints(near_x, near_y) if near_x is not None and near_y is not None else [])
+        r = self.call("find_space", *args)
+        return f"free: x {r['x1']}..{r['x2']}, y {r['y1']}..{r['y2']}  -> e.g. room <kind> {r['x1']} {r['y1']} {r['x2']} {r['y2']}"
+
+    def v_room(self, kind: str, x1: str, y1: str, x2: str, y2: str, door_side: str = "south") -> str:
+        r = self.call("room", kind, *self._ints(x1, y1, x2, y2), door_side)
+        i = r["inside"]
+        furn = ", ".join(r["furniture"]) if r["furniture"] else "none needed"
+        z = f"zoned {r['room']}" if r["zoned"] else "NOT zoned"
+        return (f"{r['room']}: {r['built']}; inside x {i['x1']}..{i['x2']}, y {i['y1']}..{i['y2']}; {z}\n"
+                f"furniture: {furn}\n{r['note']}\nNext: `wait` so workmen build it, then `progress`.")
+
+    def v_cells(self, x: str, y: str, count: str = "4") -> str:
+        r = self.call("cell_block", *self._ints(x, y, count))
+        c = r["corridor"]
+        return (f"{len(r['cells'])} cells ordered (bed, toilet, jail door each){', zoned as Cell' if r['zoned'] else ''}.\n"
+                f"corridor x {c['x1']}..{c['x2']}, y {c['y1']}..{c['y2']} - keep it clear.\n{r['next']}")
+
+    def v_fence(self, x1: str, y1: str, x2: str, y2: str) -> str:
+        r = self.call("perimeter", *self._ints(x1, y1, x2, y2))
+        gates = ", ".join(r["road_gates"]) or "none"
+        return f"fence ordered: {r['fence_cells']} cells, road gates at {gates} (~${_n(r['cost_estimate'])}).\n{r['note']}"
+
+    def v_hookup(self, kind: str = "both") -> str:
+        r = self.call("hookup", kind)
+        parts = [r] if "kind" in r else [r["power"], r["water"]]
+        lines = [f"{p['kind']}: {p['objects_needing_it']} objects need it, {p['newly_connected']} newly connected, "
+                 f"{p['pieces_ordered']} pieces ordered" for p in parts]
+        return "\n".join(lines + ["Workmen lay them over time. Run hookup again after adding rooms."])
+
+    def v_power(self, action: str = "") -> str:
+        u = self.call("utilities", action.lower() == "on")
+        lines = [f"station at {p['x']},{p['y']}: {'ON' if p['on'] is True else p['on'] if p['on'] else 'OFF'}, "
+                 f"demand {p['demand']:g}/{p['capacity']:g}" for p in u["power_stations"]]
+        lines += [f"water pump at {p['x']},{p['y']}: {'powered' if p['powered'] else 'NO POWER (no water!)'}"
+                  for p in u["pumps"]]
+        lines += ["PROBLEM: " + p for p in u["problems"]]
+        return "\n".join(lines) or "no stations"
+
+    def v_zone(self, room_type: str, x1: str, y1: str, x2: str, y2: str) -> str:
+        r = self.call("zone", room_type, *self._ints(x1, y1, x2, y2))
+        return f"{r['zoned']}: {r['cells']} cells, {r['cells_in_a_room_now']} now in a room. {r['note']}"
+
+    def v_unzone(self, x1: str, y1: str, x2: str, y2: str) -> str:
+        r = self.call("unzone", *self._ints(x1, y1, x2, y2))
+        return f"zone removed from {r['cells']} cells"
+
+    def v_roomtypes(self) -> str:
+        return ", ".join(self.call("room_types"))
+
+    def v_hire(self, kind: str, count: str = "1") -> str:
+        r = self.call("hire", kind, *self._ints(count))
+        return (f"hired {r['hired']} {r['type']} for ${_n(r['cost'])}; money left ${_n(r['money_left'])}. "
+                f"They walk in from the road at {r['arrives_at']['x']},{r['arrives_at']['y']}.")
+
+    def v_research(self, name: str | None = None) -> str:
+        if name:
+            r = self.call("research", name)
+            if r.get("status") == "started":
+                return f"started {r['research']} (${_n(r['cost'])}); the {r['researched_by']} works on it. {r['note']}"
+            return f"{r['research']}: {r['status']}"
+        r = self.call("research")
+        groups: dict[str, list[str]] = {}
+        for item in r["research"]:
+            st = item["status"].split(" (")[0]
+            st = "in progress" if st.startswith("in progress") else st
+            label = f"{item['name']} ${_n(item['cost'])}" + (f" -> {item['unlocks']}" if item.get("unlocks") else "")
+            if item["status"].startswith("in progress"):
+                label += f" ({item['status'][12:]})"
+            groups.setdefault(st, []).append(label)
+        lines = [f"Warden hired: {'yes' if r['warden_hired'] else 'NO - hire a Warden and build an office first'}"]
+        for st in ("in progress", "available", "done", "locked"):
+            if groups.get(st):
+                lines.append(f"{st}: " + "; ".join(groups[st] if st != "locked" else [g.split(' $')[0] for g in groups[st]]))
+        lines.append(r["how"])
+        return "\n".join(lines)
+
+    def v_pause(self) -> str:
+        return self.call("pause")["note"]
+
+    def v_resume(self, speed: str = "1") -> str:
+        r = self.call("resume", float(speed))
+        return f"running at speed {r['speed']:g}"
+
+    def v_wait(self, seconds: str = "60", speed: str = "3") -> str:
+        secs = max(5, min(600, int(float(seconds))))
+        before = self.call("state")
+        self.call("resume", float(speed))
+        time.sleep(secs)
+        after = self.call("state")
+        p = self.call("progress")
+        c = p.get("construction", {})
+        objs = p.get("objects", {})
+        done = {k: f"{v['installed']}/{v['ordered']}" for k, v in objs.items()}
+        return (f"waited {secs}s at speed {float(speed):g}: {before.get('clock')} -> {after.get('clock')}; "
+                f"money ${_n(before.get('money'))} -> ${_n(after.get('money'))}\n"
+                f"cells finished since last check {c.get('finished_since_last_check', 0)}, still waiting {c.get('still_pending', 0)}\n"
+                f"objects installed/ordered: {_counts(done)}\n"
+                f"prisoners {after.get('prisoners_total', 0)}, cell beds {after.get('cell_capacity_total', 0)}")
+
+    def v_progress(self) -> str:
+        p = self.call("progress")
+        c = p.get("construction", {})
+        objs = p.get("objects", {})
+        lines = [f"cells: {c.get('finished_since_last_check', 0)} finished since last check, {c.get('still_pending', 0)} waiting"]
+        if c.get("pending_sample"):
+            lines.append("  e.g. " + ", ".join(c["pending_sample"][:6]))
+        if objs:
+            lines.append("objects installed/ordered: " + _counts({k: f"{v['installed']}/{v['ordered']}" for k, v in objs.items()}))
+        lines.append("Nothing moving? The game must be running (`resume`), and building needs money and delivered materials.")
+        return "\n".join(lines)
+
+    def save(self, name: str, timeout: float = 20.0) -> str:
+        self.call("save", name)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            r = self.call("save_result")
+            if r.get("done"):
+                if r.get("ok"):
+                    return r["path"]
+                raise EasyError(f"save failed: {r.get('error')}")
+            time.sleep(0.3)
+        raise EasyError("save did not finish in time; is the game window minimised or loading?")
+
+    def v_save(self, name: str = "agent") -> str:
+        return f"saved {self.save(name)}"
+
+    def snapshot(self):
+        from ..state import load_prison
+        return load_prison(self.save(SNAPSHOT)).root
+
+    def rooms(self) -> list[dict]:
+        root = self.snapshot()
+        sec = root.section("Rooms")
+        info = {}
+        for r in sec.items_indexed() if sec else []:
+            rid = r.get("Id.i")
+            info[str(rid)] = {"type": r.get("RoomType"), "failed": str(r.get("RequirementsFailed")).lower() == "true"}
+        boxes = self.call("room_boxes") or {}
+        out = []
+        for rid, b in sorted(boxes.items(), key=lambda kv: int(kv[0])):
+            i = info.get(str(rid), {})
+            out.append({"id": int(rid), "type": i.get("type", "?"), "missing_something": i.get("failed", False), **b})
+        return out
+
+    def v_rooms(self) -> str:
+        rooms = self.rooms()
+        if not rooms:
+            return "No rooms yet. Build one with `room <kind> x1 y1 x2 y2`."
+        lines = []
+        for r in rooms:
+            flag = "  <- the game says something is MISSING (check its furniture/size, and power/water)" \
+                if r["missing_something"] else ""
+            lines.append(f"{r['type']:<12} x {r['x1']}..{r['x2']}, y {r['y1']}..{r['y2']} ({r['cells']} cells){flag}")
+        return "\n".join(lines)
+
+    def v_next(self) -> str:
+        s = self.call("state")
+        staff = s.get("staff") or {}
+        try:
+            rooms = self.rooms()
+        except (EasyError, BridgeError):
+            rooms = []
+        have = {}
+        for r in rooms:
+            have[r["type"]] = have.get(r["type"], 0) + 1
+        counts = self.call("count", ["PowerStation", "Capacitor", "WaterPumpStation", "Cooker", "ShowerHead"])
+        todo: list[str] = []
+        for prob in (s.get("utilities") or {}).get("problems") or []:
+            todo.append(prob.replace("api.utilities(true)", "`power on`").replace('api.hookup("power")', "`hookup power`"))
+        pris = s.get("prisoners_total", 0)
+        beds = s.get("cell_capacity_total", 0)
+        if not have.get("HoldingCell") and not have.get("Cell"):
+            todo.append("A HoldingCell so arriving prisoners have somewhere to go: `room holding x1 y1 x2 y2` (about 9x8).")
+        if beds < max(8, pris + 4):
+            todo.append(f"More cells (beds {beds}, prisoners {pris}): `cells x y 6`.")
+        if staff.get("Guard", 0) < max(2, pris // 8 + 2):
+            todo.append(f"Guards: have {staff.get('Guard', 0)}, want {max(2, pris // 8 + 2)}: `hire Guard 2`.")
+        if not have.get("Kitchen"):
+            todo.append("A Kitchen (cookers need power): `room kitchen ...` about 9x8.")
+        if not have.get("Canteen"):
+            todo.append("A Canteen next to the kitchen: `room canteen ...` about 12x10.")
+        if (have.get("Kitchen") or counts.get("Cooker")) and staff.get("Cook", 0) < 2:
+            todo.append("Cooks for the kitchen: `hire Cook 2`.")
+        if counts.get("Cooker") and not counts.get("PowerStation"):
+            todo.append("Power: cookers need electricity. Order a PowerStation (3x3) and a Capacitor. "
+                        "Cables cannot be laid from scripts yet: ask the human to connect them.")
+        if not have.get("Shower"):
+            todo.append("A Shower room (needs water): `room shower ...` about 7x6.")
+        if not have.get("Yard"):
+            todo.append("A Yard: `room yard ...` about 16x12 (outdoors, no walls).")
+        if not staff.get("Warden"):
+            todo.append("A Warden unlocks research: `hire Warden`, then `room office ...` for them.")
+        elif not have.get("Office"):
+            todo.append("An Office for the Warden: `room office x1 y1 x2 y2` (6x6).")
+        broken = [r for r in rooms if r["missing_something"]]
+        for r in broken[:3]:
+            todo.append(f"{r['type']} at {r['x1']},{r['y1']} is missing something (furniture not built yet? power? water?).")
+        if not todo:
+            todo.append("The basics are in place. `wait 120`, then `status`. Consider research (`research`).")
+        head = f"{s.get('clock')}, money ${_n(s.get('money'))}. Do these in order:"
+        return "\n".join([head] + [f"{i}. {t}" for i, t in enumerate(todo[:6], 1)])
+
+    def v_lua(self, *code: str) -> str:
+        import json
+        return json.dumps(self.bridge.exec(" ".join(code)), indent=1, default=str)

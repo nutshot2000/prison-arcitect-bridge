@@ -24,7 +24,7 @@ local spawned, deleted = 0, 0
 Object = {
     GetMaterial = function(x, y)
         if built[x .. "," .. y] then return built[x .. "," .. y] end
-        if x >= 90 then return "Road" end
+        if x >= 90 and x <= 95 then return "Road" end
         if x >= 10 and x <= 19 and y >= 10 and y <= 19 then return "BrickWall" end
         return "Dirt"
     end,
@@ -40,6 +40,8 @@ World = {
     GetCell = function(x, y) if x >= 0 and y >= 0 and x < W and y < H then return { CellX = x, CellY = y } end return {} end,
     NumPrisoners = { Normal = 3, MinSec = 2 },
     Capacity = { Normal = 4 },
+    Balance = 10000,
+    TimeIndex = 1440 + 8 * 60 + 5,
 }
 this = { Name = "world" }
 
@@ -98,7 +100,7 @@ assert(not r.ok and string.find(r.error, "outside the map"), r.error)
 r = call("build_line", "BrickWall", 0, 0, 3, 3); assert(not r.ok and string.find(r.error, "horizontal"))
 r = call("build_area", "concretefloor", 1, 1, 1, 1); assert(r.ok and r.result.material == "ConcreteFloor")
 r = call("furnish", "spaceship", 1, 1, 5, 5); assert(not r.ok and string.find(r.error, "kitchen"))
-r = call("zone", "Cell", 1, 1, 3, 3); assert(not r.ok and string.find(r.error, "Ask the human"))
+r = call("zone", "Cell", 1, 1, 3, 3); assert(not r.ok and string.find(r.error, "DLL 0.3"), r.error)
 r = call("camera", 1, 1, 3, 3); assert(not r.ok)
 
 -- construction helpers
@@ -120,6 +122,26 @@ for _, c in ipairs(calls) do
     if c[2] == "JailDoor" then jd = jd + 1 end
 end
 assert(beds == 3 and jd == 3)
+-- the dividing walls must be the LAST order for their cells (a later floor order replaced them live)
+local last = {}
+for _, c in ipairs(calls) do if c[1] == "Construction" then last[c[3] .. "," .. c[4]] = c[2] end end
+for y = 41, 43 do assert(last["34," .. y] == "BrickWall" and last["38," .. y] == "BrickWall", "divider wall lost at y " .. y) end
+-- door cells must end up as floor, never wall (live: walls were built over finished doors)
+for _, c in ipairs(r.result.cells) do
+    assert(last[c.door.x .. "," .. c.door.y] == "ConcreteFloor", "wall ordered on cell door " .. c.door.x .. "," .. c.door.y)
+end
+calls = {}
+r = call("building", 60, 60, 66, 66, "east")
+last = {}
+for _, c in ipairs(calls) do if c[1] == "Construction" then last[c[3] .. "," .. c[4]] = c[2] end end
+assert(last["66,63"] == "ConcreteFloor", "wall ordered on building door: " .. tostring(last["66,63"]))
+-- furniture must fit inside the room: an object ordered at x covers x..x+w-1 (measured live)
+calls = {}
+r = call("furnish", "canteen", 57, 39, 66, 46); assert(r.ok, r.error)
+for _, c in ipairs(calls) do
+    local w = ({ Table = 4, Bench = 4, ServingTable = 5 })[c[2]]
+    if w then assert(c[3] >= 57 and c[3] + w - 1 <= 66, c[2] .. " at " .. c[3] .. " sticks out of 57..66") end
+end
 
 -- find_space avoids walls and road
 r = call("find_space", 8, 6); assert(r.ok, r.error)
@@ -153,5 +175,125 @@ assert(r.result.y2 < 19, "find_space must avoid planned cells: " .. J.encode(r))
 inbox = { '{"id":20,"op":"ping"}', '{"id":21,"op":"ping"}', '{"id":22,"op":"ping"}' }
 outbox = {}
 Update(0.1)
-assert(#outbox == 3)
+assert(#outbox == 3); outbox = {}
+
+-- power and water
+r = call("hookup", "power"); assert(not r.ok and string.find(r.error, "PowerStation"), r.error)
+r = call("place_object", "Capacitor", 50, 5)
+r = call("hookup", "power"); assert(not r.ok and string.find(r.error, "PowerStation"), "a capacitor is not a power source")
+world_objects[#world_objects + 1] = { Type = "Light", Pos = { x = 88.5, y = 70.5 } }  -- outdoors (no Ind)
+calls = {}
+r = call("place_object", "PowerStation", 60, 5)
+r = call("place_object", "Cooker", 70, 5)
+r = call("hookup", "power"); assert(r.ok and r.result.newly_connected >= 1, J.encode(r))
+local cab = {}
+for _, c in ipairs(calls) do if c[2] == "ElectricalCable" then cab[c[3] .. "," .. c[4]] = true end end
+for x = 63, 70 do assert(cab[x .. ",5"], "cable from the cooker at 70,5 to the station edge at 62,5 missing " .. x) end
+assert(not cab["62,5"], "no cable on the station itself")
+assert(not cab["88,70"], "outdoor street light must not be cabled")
+assert(cab["50,5"], "the capacitor is connected like any other user")
+r = call("hookup", "power"); assert(r.result.pieces_ordered == 0, "second hookup must not re-lay")
+calls = {}
+r = call("place_object", "WaterPumpStation", 60, 20)
+r = call("place_object", "Toilet", 60, 30)
+r = call("hookup", "water"); assert(r.ok and r.result.newly_connected >= 1, J.encode(r))
+local pipes = {}
+for _, c in ipairs(calls) do if c[2] == "PipeLarge" or c[2] == "PipeSmall" then pipes[c[3] .. "," .. c[4]] = c[2] end end
+assert(pipes["60,30"] == "PipeSmall", "small pipe goes under the toilet: " .. tostring(pipes["60,30"]) .. " " .. J.encode(r))
+for y = 23, 29 do assert(pipes["60," .. y] == "PipeLarge", "large pipe from the pump edge to the toilet missing at y " .. y) end
+r = call("progress"); assert(r.ok and not r.result.objects.PipeLarge, "utilities are not counted as furniture")
+
+-- perimeter: road crossing becomes a RoadGate (fake map: road at x >= 90)
+calls = {}
+r = call("perimeter", 80, 2, 97, 70)
+assert(r.ok and #r.result.road_gates == 2 and string.find(r.result.road_gates[1], "90,2"), J.encode(r))
+for _, c in ipairs(calls) do
+    if c[1] == "Construction" then assert(c[3] < 90 or c[3] > 96, "fence inside the 7-wide gate at " .. c[3]); assert(c[2] == "Fence", "only fence is ordered, got " .. c[2]) end
+end
+r = call("perimeter", 80, 2, 95, 70); assert(not r.ok and string.find(r.error, "along the road"), r.error)
+
+r = call("build_area", "Building", 1, 1, 2, 2); assert(not r.ok and string.find(r.error, "UI tool"), r.error)
+r = call("build_area", "cancelJobs", 1, 1, 2, 2); assert(not r.ok)
+
+-- hiring without DLL 0.3
+r = call("hire", "Guard", 1); assert(r.ok and r.result.hired == 1 and World.Balance == 9500, J.encode(r))
+r = call("hire", "Doctor", 1); assert(not r.ok and string.find(r.error, "Health"), r.error)
+
+-- state with money and clock
+r = call("state"); assert(r.ok and r.result.money == 9500 and r.result.clock == "day 2 08:05" and not r.result.native, J.encode(r))
+r = call("overview"); assert(r.ok and #r.result.rows == 27 and #r.result.rows[1] == 34, J.encode(r.result.rows))
+
+---------------------------------------------------------------------------
+-- DLL 0.3 (native actions): reload the script with a fake native DLL
+---------------------------------------------------------------------------
+local zoned, speed, saves, started = {}, 1, {}, {}
+local research = { Warden = 100, Health = 0, Maintainance = 0 }
+World.GetCell = function(x, y)
+    if x >= 0 and y >= 0 and x < W and y < H then
+        return { CellX = x, CellY = y, Room = { i = zoned[x .. "," .. y] and 7 or -1 } }
+    end
+    return {}
+end
+local pump_fn
+Game.DebugOut = function(s, fn)
+    if string.sub(s, 1, 1) ~= "\1" then return end
+    s = string.sub(s, 2)
+    if s == "poll" then return table.remove(inbox, 1) end
+    if string.sub(s, 1, 6) == "hello:" then pump_fn = fn; return "pa_bridge 0.3.0 native" end
+    if string.sub(s, 1, 6) == "reply:" then outbox[#outbox + 1] = string.sub(s, 7); return end
+    if s == "roomtypes" then return "None,Cell,HoldingCell,Kitchen,Canteen,Shower,Yard,Office,MedicalWard,Deliveries,Garbage" end
+    local t, a, b, c, d = string.match(s, "^zone:(%S+) (%-?%d+) (%-?%d+) (%-?%d+) (%-?%d+)$")
+    if t then
+        for x = tonumber(a), tonumber(c) do for y = tonumber(b), tonumber(d) do zoned[x .. "," .. y] = t ~= "None" or nil end end
+        return "ok 1"
+    end
+    if s == "speed" then return speed end
+    local sp = string.match(s, "^setspeed:(.+)$"); if sp then speed = tonumber(sp); return "ok" end
+    local sv = string.match(s, "^save:(.+)$"); if sv then saves[#saves + 1] = sv; return "queued" end
+    if s == "saveresult" then return "ok C:/saves/" .. tostring(saves[#saves]) .. ".prison" end
+    if s == "researchlist" then
+        local parts = {}
+        for k, v in pairs(research) do parts[#parts + 1] = k .. ":" .. (started[k] and 1 or 0) .. ":" .. v end
+        return table.concat(parts, ",")
+    end
+    local rs = string.match(s, "^research:(.+)$"); if rs then started[rs] = true; return "ok" end
+    return "error: unknown native " .. s
+end
+assert(loadstring(src, "world.lua"))()
+api = PA_BRIDGE.api
+inbox, outbox = {}, {}
+Update(0.1)
+assert(type(pump_fn) == "function", "hello must hand the pump to the DLL")
+inbox = { '{"id":30,"op":"ping"}' }
+pump_fn()   -- the DLL calls this while paused
+assert(#outbox == 1 and J.decode(outbox[1]).id == 30); outbox = {}
+
+r = call("state"); assert(r.ok and r.result.native == true and r.result.paused == false, J.encode(r))
+r = call("zone", "kitchen", 2, 2, 4, 3); assert(r.ok and r.result.zoned == "Kitchen" and r.result.cells_in_a_room_now == 6, J.encode(r))
+r = call("zone", "Spaceship", 2, 2, 4, 3); assert(not r.ok and string.find(r.error, "room_types"), r.error)
+r = call("zone", "infirmary", 2, 2, 4, 3); assert(r.ok and r.result.zoned == "MedicalWard", J.encode(r))
+r = call("zones"); assert(r.ok and #r.result == 1 and string.find(r.result[1], "MedicalWard"), J.encode(r))
+r = call("unzone", 2, 2, 4, 3); assert(r.ok and r.result.cells_in_a_room_now == 0)
+r = call("zones"); assert(#r.result == 0, J.encode(r))
+calls = {}
+r = call("room", "kitchen", 40, 5, 50, 12); assert(r.ok and r.result.zoned and r.result.inside.x1 == 41, J.encode(r))
+assert(zoned["41,6"] and not zoned["40,5"], "room must zone the inside only")
+r = call("room", "deliveries", 60, 1, 65, 4); assert(r.ok and r.result.built == "outdoor area (no walls)", J.encode(r))
+r = call("cell_block", 30, 50, 2); assert(r.ok and r.result.zoned and zoned["31,51"], J.encode(r))
+r = call("pause"); assert(r.ok and speed == 0)
+r = call("state"); assert(r.result.paused == true)
+r = call("resume", 2); assert(r.ok and speed == 2)
+r = call("save", "test_1"); assert(r.ok and saves[1] == "test_1")
+r = call("save_result"); assert(r.ok and r.result.ok and string.find(r.result.path, "test_1"), J.encode(r))
+r = call("hire", "Doctor"); assert(not r.ok and string.find(r.error, "research"), r.error)
+r = call("research", "Health"); assert(not r.ok and string.find(r.error, "Warden"), r.error)  -- no Warden hired yet
+r = call("hire", "Warden"); assert(r.ok and r.result.hired == 1, J.encode(r))
+r = call("hire", "Warden"); assert(not r.ok and string.find(r.error, "only have one"), r.error)
+r = call("research", "Health"); assert(r.ok and r.result.status == "started" and started.Health, J.encode(r))
+r = call("research", "Cleaning"); assert(not r.ok and string.find(r.error, "Maintainance"), r.error)
+r = call("research"); assert(r.ok and #r.result.research > 20, J.encode(r))
+research.Health = 100
+r = call("hire", "doctor", 2); assert(r.ok and r.result.hired == 2 and r.result.type == "Doctor", J.encode(r))
+World.Balance = 100
+r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
 print("world.lua tests passed")

@@ -10,8 +10,10 @@
 --
 -- Without the DLL this script does nothing.
 
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
 local MAX_REQUESTS_PER_TICK = 64
+local DebugOut = Game.DebugOut  -- patched by the DLL; native actions go through it
+local NATIVE = false            -- DLL 0.3+ with verified game functions (zone/save/speed/research)
 
 ---------------------------------------------------------------------------
 -- JSON
@@ -205,14 +207,40 @@ end
 local PLANNED = {}         -- key "x,y" -> material
 local PLANNED_OBJECTS = {} -- list of {type, x, y}
 
+-- Cables and pipes are objects that workmen lay and that then disappear into
+-- the game's utility grid, so they are tracked apart from furniture.
+local UTILITY_OBJECT = { ElectricalCable = "power", PipeLarge = "water", PipeSmall = "water", PipeHotWater = "water" }
+local PLANNED_UTIL = { power = {}, water = {} }  -- "x,y" -> object name
+
 local raw_req = req
 req = function(kind, a, b, c, ...)
     if kind == "Construction" then PLANNED[b .. "," .. c] = a
-    elseif kind == "PlaceObject" then PLANNED_OBJECTS[#PLANNED_OBJECTS + 1] = { a, b, c } end
+    elseif kind == "PlaceObject" then
+        if UTILITY_OBJECT[a] then PLANNED_UTIL[UTILITY_OBJECT[a]][b .. "," .. c] = a
+        else PLANNED_OBJECTS[#PLANNED_OBJECTS + 1] = { a, b, c } end
+    end
     return raw_req(kind, a, b, c, ...)
 end
 
 local function planned_at(x, y) return PLANNED[x .. "," .. y] end
+
+-- ---- native actions (DLL) ----------------------------------------------------
+local function native(cmd)
+    if not NATIVE then
+        error("this needs bridge DLL 0.3 or newer (GLU32.dll in the game folder; restart the game after " ..
+              "updating it). Check with api.state().native", 0)
+    end
+    local r = DebugOut("\1" .. cmd)
+    if type(r) == "string" and string.sub(r, 1, 6) == "error:" then error(string.sub(r, 8), 0) end
+    return r
+end
+
+local function split(s, sep)
+    local out = {}
+    if not s or s == "" then return out end
+    for part in string.gmatch(s, "([^" .. sep .. "]+)") do out[#out + 1] = part end
+    return out
+end
 
 
 -- ---- map size (cached) ----------------------------------------------------
@@ -246,8 +274,12 @@ local WALLS = { BrickWall = 1, ConcreteWall = 1, PerimeterWall = 1, Fence = 1, B
 local FLOORS = { ConcreteFloor = 1, WoodenFloor = 1, CeramicFloor = 1, MosaicFloor = 1, MetalFloor = 1,
                  ConcreteTiles = 1, PavingStone = 1, MarbleTiles = 1, WhiteTiles = 1, Carpet = 1,
                  Gravel = 1, Road = 1, Grass = 1, Dirt = 1 }
-local SPECIAL = { Building = 1, BuildingConcrete = 1, Demolish = 1, DemolishWalls = 1, ClearIndoorArea = 1,
-                  RemoveTunnels = 1, CancelJobs = 1 }
+-- Names of the game's UI tools. WorkQueue.Request does NOT run them: it builds them
+-- as literal materials (measured live: "CancelJobs" became the floor of two cells,
+-- and "Building" foundation never turns into walls and floor). Refuse them.
+local UI_TOOLS = { Building = 1, BuildingConcrete = 1, Demolish = 1, DemolishWalls = 1, ClearIndoorArea = 1,
+                   RemoveTunnels = 1, CancelJobs = 1, BuildingFrame = 1 }
+local SPECIAL = {}
 local OPEN_GROUND = { Dirt = 1, Grass = 1, LongGrass = 1, Mud = 1, Gravel = 1, Stone = 1, Snow = 1, Sand = 1 }
 
 local function known_material(m)
@@ -271,6 +303,12 @@ end
 
 local function check_material(m)
     if type(m) ~= "string" or m == "" then error("material name required, e.g. \"BrickWall\" or \"ConcreteFloor\"", 0) end
+    for k in pairs(UI_TOOLS) do
+        if lower_eq(k, m) then
+            error(k .. " is a game UI tool, not a material: scripts would build it as a literal floor. " ..
+                  "Build walls + floor instead (api.building / api.room); they are marked indoor for you.", 0)
+        end
+    end
     if known_material(m) then return m end
     local all = {}
     for k in pairs(WALLS) do all[k] = 1 end
@@ -331,6 +369,39 @@ end
 doc("map", "[x1, y1, x2, y2]", "Text map of an area (default: whole map). # wall, _ floor, . open ground, = road, + ordered but not built yet.",
     "api.map(60, 20, 99, 60)")
 
+-- Small whole-map picture: each character is a block of cells, showing the
+-- most important thing in the block (wall > planned > floor > road > paving > ground).
+local RANK = { ["#"] = 7, ["%"] = 7, ["|"] = 6, ["+"] = 5, ["_"] = 4, ["b"] = 4, ["f"] = 4, ["="] = 3, [","] = 2,
+               ["~"] = 1, ["."] = 0, ["?"] = 1 }
+function api.overview(block)
+    block = math.max(2, math.min(10, tonumber(block) or 3))
+    local w, h = map_size()
+    local rows = {}
+    for by = 0, h - 1, block do
+        local line = {}
+        for bx = 0, w - 1, block do
+            local best, br = ".", -1
+            for y = by, math.min(by + block - 1, h - 1) do
+                for x = bx, math.min(bx + block - 1, w - 1) do
+                    local m = Object.GetMaterial(x, y)
+                    local c = CHAR[m] or "?"
+                    local p = planned_at(x, y)
+                    if p and p ~= m then c = "+" end
+                    if (RANK[c] or 0) > br then best, br = c, RANK[c] or 0 end
+                end
+            end
+            line[#line + 1] = best
+        end
+        rows[#rows + 1] = table.concat(line)
+    end
+    return { block = block, rows = rows,
+             how_to_read = "Each character is a " .. block .. "x" .. block .. " block. Row r, column c covers cells x=" ..
+                 "c*" .. block .. ".., y=r*" .. block .. ".. (both counted from 0). # wall, | fence, + ordered not built, " ..
+                 "_ floor, = road, , paving, . open ground. Use api.map(x1,y1,x2,y2) for exact cells.",
+             zones_made = api.zones() }
+end
+doc("overview", "[block]", "Small picture of the whole map (each character = 3x3 cells). Start here.", "api.overview()")
+
 function api.material_at(x, y)
     x, y = rect(x, y, x, y, "cell")
     return Object.GetMaterial(x, y)
@@ -356,24 +427,67 @@ local function copy(t)
     return out
 end
 
+local function world_get(k)
+    local ok, v = pcall(function() return World[k] end)
+    if ok then return v end
+end
+
+local function nonzero(t)
+    local out, total = {}, 0
+    for k, v in pairs(t or {}) do
+        v = tonumber(v) or 0
+        if v ~= 0 then out[k] = v; total = total + v end
+    end
+    return out, total
+end
+
+function api.money()
+    return { balance = math.floor(tonumber(world_get("Balance")) or 0) }
+end
+doc("money", "", "Current bank balance in dollars.", "api.money()")
+
+function api.clock()
+    -- World.TimeIndex counts game minutes since the prison was founded (1440 per day).
+    local t = tonumber(world_get("TimeIndex")) or 0
+    local day = math.floor(t / 1440) + 1
+    local minute = math.floor(t % 1440)
+    return { day = day, hour = math.floor(minute / 60), minute = minute % 60,
+             text = string.format("day %d %02d:%02d", day, math.floor(minute / 60), minute % 60) }
+end
+
+function api.speed()
+    local s
+    if NATIVE then s = DebugOut("\1speed") end
+    if type(s) ~= "number" then s = Game.GetGameSpeed() end
+    return s
+end
+
 function api.state()
     local w, h = map_size()
     local ok_p, prisoners = pcall(function() return copy(World.NumPrisoners) end)
     local ok_c, capacity = pcall(function() return copy(World.Capacity) end)
-    local total = 0
-    if ok_p then for _, v in pairs(prisoners) do total = total + (tonumber(v) or 0) end end
+    local pris, total = nonzero(ok_p and prisoners or {})
+    local cap, beds = nonzero(ok_c and capacity or {})
+    local speed = api.speed()
     return {
         bridge = VERSION,
-        time = Game.Time(),
-        speed = Game.GetGameSpeed(),
+        native = NATIVE,
+        clock = api.clock().text,
+        paused = speed == 0,
+        speed = speed,
+        money = api.money().balance,
         map = { w = w, h = h },
         prisoners_total = total,
-        prisoners = ok_p and prisoners or nil,
-        cell_capacity = ok_c and capacity or nil,
-        tips = "Use api.map() to see the layout and api.help() for what you can do.",
+        prisoners = pris,
+        cell_capacity_total = beds,
+        cell_capacity = cap,
+        staff = api.staff().by_type,
+        zones_made = api.zones(),
+        utilities = (function() local ok, u = pcall(api.utilities); return ok and u or nil end)(),
+        tips = "Use api.overview() to see the layout and api.help() for what you can do.",
     }
 end
-doc("state", "", "Live summary: time, speed, map size, prisoners by category, cell capacity.", "api.state()")
+doc("state", "", "Live summary: money, clock, paused, prisoners, cell capacity, staff, zones made.", "api.state()")
 
 function api.info() return api.state() end
 
@@ -424,7 +538,7 @@ function api.build_area(material, x1, y1, x2, y2)
     for x = x1, x2 do for y = y1, y2 do req("Construction", m, x, y); n = n + 1 end end
     return { queued = n, material = m, hint = hint }
 end
-doc("build_area", "material, x1, y1, x2, y2", "Fill a rectangle with a floor/material (ConcreteFloor, PavingStone, Building foundation...).",
+doc("build_area", "material, x1, y1, x2, y2", "Fill a rectangle with a floor/material (ConcreteFloor, PavingStone, ConcreteTiles...).",
     "api.build_area(\"ConcreteFloor\", 10, 10, 20, 15)")
 
 function api.build_wall_rect(material, x1, y1, x2, y2)
@@ -464,6 +578,23 @@ doc("place_object", "name, x, y, [ox, oy]", "Buy and install one object (Bed, To
 
 local SIDES = { north = true, south = true, east = true, west = true }
 
+-- Rooms only work indoors (cells, kitchens...). The game marks cells indoor when a
+-- foundation is finished; walls + floor built as separate orders stay outdoor
+-- (measured live: prisoners reported FailedToFindCell until Ind was set). The
+-- area is walled all round, so mark it indoor like a finished building.
+local function set_indoors(x1, y1, x2, y2)
+    for x = x1, x2 do for y = y1, y2 do
+        pcall(function() World.GetCell(x, y).Ind = true end)
+    end end
+end
+
+-- The door cell must not get a wall: a wall order there was built over the
+-- finished door (live: kitchen and shower doors turned into BrickWall). A later
+-- order for the same cell replaces the wall order, so order floor there instead.
+local function door_gap(x, y, floor)
+    req("Construction", floor or "ConcreteFloor", x, y)
+end
+
 -- A building: walls around the rectangle, a floor inside, and a door.
 function api.building(x1, y1, x2, y2, door_side, door, wall, floor)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "building")
@@ -473,25 +604,73 @@ function api.building(x1, y1, x2, y2, door_side, door, wall, floor)
     wall = wall or "BrickWall"
     floor = floor or "ConcreteFloor"
     door = door or "Door"
-    api.build_wall_rect(wall, x1, y1, x2, y2)
     api.build_area(floor, x1 + 1, y1 + 1, x2 - 1, y2 - 1)
+    api.build_wall_rect(wall, x1, y1, x2, y2)
+    set_indoors(x1, y1, x2, y2)
     local cx, cy = math.floor((x1 + x2) / 2), math.floor((y1 + y2) / 2)
     local dx, dy, ox, oy
     if door_side == "south" then dx, dy, ox, oy = cx, y2, 0, 1
     elseif door_side == "north" then dx, dy, ox, oy = cx, y1, 0, 1
     elseif door_side == "east" then dx, dy, ox, oy = x2, cy, 1, 0
     else dx, dy, ox, oy = x1, cy, 1, 0 end
+    door_gap(dx, dy, floor)
     req("PlaceObject", door, dx, dy, ox, oy)
     return {
         queued = true, walls = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }, door = { object = door, x = dx, y = dy },
         inside = { x1 = x1 + 1, y1 = y1 + 1, x2 = x2 - 1, y2 = y2 - 1 },
-        next = "Workmen build it over time. Then furnish the inside with api.furnish(kind, inside) " ..
-               "and ask the human to zone the room (zoning is not available from scripts).",
+        next = "Workmen build it over time. Furnish the inside with api.furnish(kind, inside...) and zone it " ..
+               "with api.zone(room_type, inside...). api.room(...) does all three in one call.",
     }
 end
 doc("building", "x1, y1, x2, y2, [door_side, door, wall, floor]",
     "Walls + floor + a door (default Door on the south side). Returns the inside rectangle.",
     "api.building(60, 30, 70, 38, \"south\")")
+
+-- Perimeter fence around a rectangle. Where the fence crosses the road it leaves
+-- a gap and puts a RoadGate (7 wide) there so trucks and new prisoners get in.
+local function is_road(x, y) return string.sub(Object.GetMaterial(x, y) or "", 1, 4) == "Road" end
+
+function api.perimeter(x1, y1, x2, y2, material)
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2, "perimeter")
+    material = material or "Fence"
+    local fence, gates = 0, {}
+    local function side(y)  -- horizontal side: fence, road runs become gates
+        -- A RoadGate is 7 cells wide (ordered at its left cell) and roads are often 5
+        -- wide, so the gate also covers the cells beside the road. Find the gate spans
+        -- first and never order fence there (an order cannot be taken back: the UI tool
+        -- names CancelJobs/Demolish get BUILT as literal materials by the work queue).
+        local gate_at = {}
+        local x = x1
+        while x <= x2 do
+            if is_road(x, y) then
+                local s = x
+                while x <= x2 and is_road(x, y) do x = x + 1 end
+                local gx = math.max(x1, s - math.floor(math.max(0, 7 - (x - s)) / 2))
+                for gc = gx, gx + 6 do gate_at[gc] = true end
+                req("PlaceObject", "RoadGate", gx, y, 0, 1)
+                gates[#gates + 1] = gx .. "," .. y .. " (road " .. (x - s) .. " wide)"
+            else
+                x = x + 1
+            end
+        end
+        for fx = x1, x2 do
+            if not gate_at[fx] then req("Construction", material, fx, y); fence = fence + 1 end
+        end
+    end
+    side(y1); side(y2)
+    for y = y1 + 1, y2 - 1 do
+        for _, x in ipairs({ x1, x2 }) do
+            if is_road(x, y) then error("the fence runs along the road at x=" .. x .. "; move that side off the road", 0) end
+            req("Construction", material, x, y); fence = fence + 1
+        end
+    end
+    return { fence_cells = fence, road_gates = gates, cost_estimate = fence * 20 + #gates * 1000,
+             note = "Keeps prisoners in. Everything the prison uses (deliveries, garbage, power, water) should be inside. " ..
+                    (#gates == 0 and "No road crossing found: make sure trucks can still reach Deliveries." or
+                     "Road gates open for vehicles and staff.") }
+end
+doc("perimeter", "x1, y1, x2, y2, [material]", "Fence around the whole prison; road crossings get a RoadGate.",
+    "api.perimeter(92, 8, 147, 79)")
 
 -- ---- furnishing ---------------------------------------------------------------
 -- Object footprints (width, height) when facing down (0,1).
@@ -501,10 +680,11 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
                OfficeDesk = { 2, 1 }, FilingCabinet = { 1, 1 }, Chair = { 1, 1 }, SofaChairDouble = { 2, 1 },
                GuardLocker = { 1, 1 }, MedicalBed = { 2, 2 }, Bin = { 1, 1 } }
 
--- PlaceObject anchor offset from the left/top cell of the footprint, by width.
--- Measured live: a width-4 object requested at x lands on cells x-3..x.
--- (Other widths are assumed to follow the same rule; api.calibrate() checks.)
-local function anchor_x(left, w) return left + w - 1 end
+-- PlaceObject anchor for a footprint whose left/top cell is given (facing down, 0,1).
+-- Measured live 29 Sep 2026 (object Pos after install): an object ordered at x covers
+-- x .. x+w-1 (Table at 110 -> Pos.x 112 = cells 110..113; Sink at 99 -> 100.5 = 99..101),
+-- and a height-2 Bed ordered at y covers y-1 .. y (Pos.y 33.0 = cells 32..33).
+local function anchor_x(left, w) return left end
 local function anchor_y(top, h) return top + h - 1 end
 
 local function put(list, obj, left, top)
@@ -516,15 +696,16 @@ local LAYOUTS = {}
 
 -- Each layout gets the inside rectangle and returns a list of {object, x, y}.
 LAYOUTS.kitchen = function(x1, y1, x2, y2, out)
+    -- cookers along the top wall; a sink (required) and fridges along the bottom wall
     local x = x1
-    while x + 1 <= x2 do  -- cookers along the top wall, then fridges, then a sink
-        if #out < 2 then put(out, "Cooker", x, y1)
-        elseif #out < 4 then put(out, "Fridge", x, y1)
-        else break end
-        x = x + 2
-    end
-    if x + 2 <= x2 then put(out, "Sink", x, y1) end
-    return "Kitchen: cookers, fridges and a sink along the back wall. Zone it as Kitchen, next to a Canteen."
+    while x + 1 <= x2 and #out < 3 do put(out, "Cooker", x, y1); x = x + 2 end
+    if y2 - y1 < 2 or x2 - x1 < 2 then error("a kitchen needs at least 3 x 3 cells inside", 0) end
+    put(out, "Sink", x1, y2)
+    x = x1 + 3
+    local fridges = 0
+    while x + 1 <= x2 and fridges < 2 do put(out, "Fridge", x, y2); x = x + 2; fridges = fridges + 1 end
+    return "Kitchen: cookers on the top wall, a sink and fridges on the bottom wall. Cookers and fridges need power, " ..
+           "the sink needs water (api.hookup). Hire 2+ Cooks. Put a Canteen next to it."
 end
 
 LAYOUTS.canteen = function(x1, y1, x2, y2, out)
@@ -581,14 +762,35 @@ LAYOUTS.staffroom = function(x1, y1, x2, y2, out)
     return "Staff room: TV and sofa. Zone as Staffroom."
 end
 
+LAYOUTS.infirmary = function(x1, y1, x2, y2, out)
+    for x = x1, x2 - 1, 3 do put(out, "MedicalBed", x, y1) end
+    return "Infirmary: medical beds. Zone as MedicalWard; needs a Doctor (Health research)."
+end
+
+-- Rooms that need no furniture: just the zone (they still need a floor, and
+-- Deliveries/Garbage/Storage work best next to the road).
+local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put it next to the road.",
+                      garbage = "Garbage: bins are collected here. Put it next to the road.",
+                      storage = "Storage: supplies are kept here." }
+
+-- furnish kind -> room type to zone
+local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower", yard = "Yard",
+                    holding = "HoldingCell", cell = "Cell", office = "Office", staffroom = "Staffroom",
+                    infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage" }
+
+local function kind_names()
+    local names = {}
+    for k in pairs(KIND_ROOM) do names[#names + 1] = k end
+    table.sort(names)
+    return table.concat(names, ", ")
+end
+
 function api.furnish(kind, x1, y1, x2, y2)
     kind = string.lower(tostring(kind or ""))
     local layout = LAYOUTS[kind]
+    if EMPTY_ROOMS[kind] then return { queued = 0, objects = {}, note = EMPTY_ROOMS[kind] } end
     if not layout then
-        local names = {}
-        for k in pairs(LAYOUTS) do names[#names + 1] = k end
-        table.sort(names)
-        error("unknown room kind '" .. kind .. "'. Choose one of: " .. table.concat(names, ", "), 0)
+        error("unknown room kind '" .. kind .. "'. Choose one of: " .. kind_names(), 0)
     end
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "room inside")
     local items = {}
@@ -600,8 +802,37 @@ function api.furnish(kind, x1, y1, x2, y2)
     return { queued = #items, objects = placed, note = note }
 end
 doc("furnish", "kind, x1, y1, x2, y2",
-    "Place the right furniture inside a room's inside area. kind: kitchen, canteen, shower, yard, holding, cell, office, staffroom.",
+    "Place the right furniture inside a room's inside area. kind: kitchen, canteen, shower, yard, holding, cell, office, " ..
+    "staffroom, infirmary.",
     "api.furnish(\"kitchen\", 61, 31, 69, 37)")
+
+-- Everything for one room in one call: walls + floor + door, furniture, zone.
+-- Yards, deliveries and garbage are outdoor areas: no walls, just a floor (or ground) and the zone.
+local OUTDOOR = { yard = true, deliveries = true, garbage = true }
+function api.room(kind, x1, y1, x2, y2, door_side)
+    kind = string.lower(tostring(kind or ""))
+    local room = KIND_ROOM[kind]
+    if not room then error("unknown room kind '" .. kind .. "'. Choose one of: " .. kind_names(), 0) end
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2, kind)
+    local inside, built
+    if OUTDOOR[kind] then
+        inside = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
+        if kind ~= "yard" then api.build_area("ConcreteFloor", x1, y1, x2, y2) end
+        built = "outdoor area (no walls)"
+    else
+        local b = api.building(x1, y1, x2, y2, door_side or "south", kind == "holding" and "JailDoor" or "Door")
+        inside, built = b.inside, "walls, floor and a " .. b.door.object .. " at " .. b.door.x .. "," .. b.door.y
+    end
+    local f = api.furnish(kind, inside.x1, inside.y1, inside.x2, inside.y2)
+    local z = NATIVE and api.zone(room, inside.x1, inside.y1, inside.x2, inside.y2) or nil
+    return { room = room, built = built, inside = inside, furniture = f.objects, zoned = z ~= nil,
+             note = f.note .. (z and "" or " Zoning needs bridge DLL 0.3: ask the human to zone the inside rectangle."),
+             next = "Workmen build it over time (api.progress()). Resume the game if it is paused." }
+end
+doc("room", "kind, x1, y1, x2, y2, [door_side]",
+    "EASIEST: build a whole room in one call: walls + floor + door + furniture + zone. kind: kitchen, canteen, shower, " ..
+    "yard, holding, cell, office, staffroom, infirmary, deliveries, garbage, storage. The rectangle includes the walls.",
+    "api.room(\"kitchen\", 60, 30, 70, 38, \"south\")")
 
 -- A row of cells facing south onto a corridor. Each cell is 3 wide x 3 deep inside.
 function api.cell_block(x, y, count, door)
@@ -612,21 +843,29 @@ function api.cell_block(x, y, count, door)
     local x2 = x + count * (cw + 1)
     local y2 = y + ch + 1
     rect(x, y, x2, y2 + 2, "cell block (with its 2-cell corridor)")
-    api.build_wall_rect("BrickWall", x, y, x2, y2)
-    for i = 1, count - 1 do api.build_line("BrickWall", x + i * (cw + 1), y + 1, x + i * (cw + 1), y2 - 1) end
+    -- floors first: a later order for the same cell replaces an earlier one, so the
+    -- dividing walls must be ordered after the floor (live bug: cells had no dividers)
     api.build_area("ConcreteFloor", x + 1, y + 1, x2 - 1, y2 - 1)
     api.build_area("ConcreteFloor", x, y2 + 1, x2, y2 + 2)
+    api.build_wall_rect("BrickWall", x, y, x2, y2)
+    for i = 1, count - 1 do api.build_line("BrickWall", x + i * (cw + 1), y + 1, x + i * (cw + 1), y2 - 1) end
+    set_indoors(x, y, x2, y2)
     local cells = {}
     for i = 0, count - 1 do
         local cx1 = x + 1 + i * (cw + 1)
         local items = {}
         LAYOUTS.cell(cx1, y + 1, cx1 + cw - 1, y2 - 1, items)
         for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, 1) end
+        door_gap(cx1 + 1, y2)
         req("PlaceObject", door, cx1 + 1, y2, 0, 1)
         cells[#cells + 1] = { x1 = cx1, y1 = y + 1, x2 = cx1 + cw - 1, y2 = y2 - 1, door = { x = cx1 + 1, y = y2 } }
     end
-    return { queued = true, cells = cells, corridor = { x1 = x, y1 = y2 + 1, x2 = x2, y2 = y2 + 2 },
-             next = "Ask the human to zone each cell as Cell (zoning is not available from scripts)." }
+    if NATIVE then
+        for _, c in ipairs(cells) do api.zone("Cell", c.x1, c.y1, c.x2, c.y2) end
+    end
+    return { queued = true, cells = cells, corridor = { x1 = x, y1 = y2 + 1, x2 = x2, y2 = y2 + 2 }, zoned = NATIVE,
+             next = NATIVE and "Every cell is zoned as Cell. Workmen build it over time (api.progress())." or
+                    "Ask the human to zone each cell as Cell (needs bridge DLL 0.3 to do it yourself)." }
 end
 doc("cell_block", "x, y, count, [door]", "A row of 3x3 cells with beds, toilets and jail doors, opening south onto a corridor.",
     "api.cell_block(20, 10, 6)")
@@ -702,8 +941,7 @@ function api.staff()
     local c = api.count(STAFF_TYPES)
     local out, total = {}, 0
     for k, v in pairs(c) do if v > 0 then out[k] = v; total = total + v end end
-    return { total = total, by_type = out,
-             note = "Hiring is not available from scripts; ask the human to hire staff in the Staff menu." }
+    return { total = total, by_type = out, note = "Hire more with api.hire(type, count)." }
 end
 doc("staff", "", "How many of each kind of staff you have.", "api.staff()")
 
@@ -730,14 +968,466 @@ function api.progress()
 end
 doc("progress", "", "What you ordered that is finished vs still pending.", "api.progress()")
 
--- ---- things scripts cannot do -------------------------------------------------
-local NOT_AVAILABLE = "is not available from scripts: the game's own function for it crashes outside " ..
-                      "the campaign. Ask the human to do it in the game UI."
-function api.zone(room_type, x1, y1, x2, y2)
-    error("Zoning (" .. tostring(room_type) .. ") " .. NOT_AVAILABLE, 0)
+-- ---- power and water ---------------------------------------------------------------
+-- Measured live: ElectricalCable / PipeLarge / PipeSmall ordered with PlaceObject are
+-- laid by workmen into the utility grid (they show up in the save's Electricity and
+-- Water sections). Cables and pipes may run under walls.
+local NEEDS = {
+    power = { "WaterPumpStation", "Capacitor", "Cooker", "Fridge", "Tv", "LargeTv", "Light", "LaundryMachine", "Cctv", "CctvMonitor",
+              "DoorControlSystem", "MetalDetector", "WorkshopSaw", "WorkshopPress", "ArcadeCabinet", "PhoneMonitor" },
+    water = { "Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine" },
+}
+-- Only real sources seed the network. A Capacitor is NOT a source: it must itself be
+-- cabled to the station (live bug: the pump was wired to an unconnected capacitor).
+local STATION = { power = { "PowerStation" }, water = { "WaterPumpStation" } }
+local SIZE3 = { PowerStation = 3, WaterPumpStation = 3 }
+
+local function lpath(x1, y1, x2, y2)
+    -- horizontal first, then vertical; includes both ends
+    local cells = {}
+    local sx = x2 >= x1 and 1 or -1
+    for x = x1, x2, sx do cells[#cells + 1] = { x, y1 } end
+    local sy = y2 >= y1 and 1 or -1
+    for y = y1 + sy, y2, sy do if y1 ~= y2 then cells[#cells + 1] = { x2, y } end end
+    return cells
 end
-function api.save() error("Saving " .. NOT_AVAILABLE, 0) end
-function api.camera() error("Camera control " .. NOT_AVAILABLE, 0) end
+
+-- small = set of "x,y" cells under fixtures: those get a small pipe (fixtures only
+-- connect to small pipes), the rest of a water line is large pipe.
+local function lay(kind, cells, small)
+    local n = 0
+    for _, c in ipairs(cells) do
+        local key = c[1] .. "," .. c[2]
+        if not PLANNED_UTIL[kind][key] then
+            local obj = kind == "power" and "ElectricalCable" or ((small and small[key]) and "PipeSmall" or "PipeLarge")
+            req("PlaceObject", obj, c[1], c[2], 0, 1)
+            n = n + 1
+        end
+    end
+    return n
+end
+
+function api.cable(x1, y1, x2, y2)
+    x1, y1, x2, y2 = num(x1, "x1"), num(y1, "y1"), num(x2, "x2"), num(y2, "y2")
+    rect(x1, y1, x1, y1, "start"); rect(x2, y2, x2, y2, "end")
+    local cells = lpath(x1, y1, x2, y2)
+    return { queued = lay("power", cells), cost_each = 10, path = "x first, then y" }
+end
+doc("cable", "x1, y1, x2, y2", "Lay power cable from one cell to another (along x, then along y). Runs under walls.",
+    "api.cable(101, 13, 101, 40)")
+
+function api.pipe(x1, y1, x2, y2)
+    x1, y1, x2, y2 = num(x1, "x1"), num(y1, "y1"), num(x2, "x2"), num(y2, "y2")
+    rect(x1, y1, x1, y1, "start"); rect(x2, y2, x2, y2, "end")
+    local cells = lpath(x1, y1, x2, y2)
+    return { queued = lay("water", cells), cost_each = 15, path = "x first, then y", pipe = "PipeLarge" }
+end
+doc("pipe", "x1, y1, x2, y2", "Lay a large water pipe from one cell to another (along x, then along y).",
+    "api.pipe(98, 20, 98, 40)")
+
+-- cells occupied by existing objects of the given types (footprint from their centre)
+local function object_cells(types)
+    local out = {}
+    with_anchor(function(anchor, radius)
+        for _, t in ipairs(types) do
+            for _, o in ipairs(find_objects(anchor, radius, t)) do
+                if o.x and o.y then
+                    local s = SIZE3[t] or 1
+                    local cx, cy = math.floor(o.x), math.floor(o.y)
+                    local h = math.floor(s / 2)
+                    for x = cx - h, cx - h + s - 1 do for y = cy - h, cy - h + s - 1 do out[#out + 1] = { x, y, t } end end
+                end
+            end
+        end
+    end)
+    return out
+end
+
+-- Power stations trip (On = false) when demand goes over capacity; the pump only
+-- works with power. Measured live: one PowerStation = capacity 50.
+function api.utilities(switch_on)
+    local out = { power_stations = {}, pumps = {}, capacity = 0, demand = 0, problems = {} }
+    with_anchor(function(anchor, radius)
+        for o in pairs(Object.GetNearbyObjects(anchor, "PowerStation", radius) or {}) do
+            if o ~= anchor then
+                local on, dem, cap = o.On, tonumber(o.Demand) or 0, tonumber(o.Capacity) or 0
+                if switch_on and on == false then o.On = true; on = "switched back on" end
+                out.power_stations[#out.power_stations + 1] = { x = math.floor(o.Pos.x), y = math.floor(o.Pos.y), on = on,
+                                                                demand = dem, capacity = cap }
+                out.capacity = out.capacity + cap; out.demand = out.demand + dem
+                if on == false then
+                    out.problems[#out.problems + 1] = "PowerStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
+                        " is OFF (tripped: too much demand). Build another PowerStation next to it, then api.utilities(true)."
+                end
+            end
+        end
+        for o in pairs(Object.GetNearbyObjects(anchor, "WaterPumpStation", radius) or {}) do
+            if o ~= anchor then
+                out.pumps[#out.pumps + 1] = { x = math.floor(o.Pos.x), y = math.floor(o.Pos.y), powered = o.Powered == true }
+                if o.Powered ~= true then
+                    out.problems[#out.problems + 1] = "WaterPumpStation at " .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y) ..
+                        " has no power, so there is NO WATER. Check the power stations, then api.hookup(\"power\")."
+                end
+            end
+        end
+    end)
+    if #out.power_stations == 0 then out.problems[#out.problems + 1] = "No PowerStation: kitchens and the water pump need one." end
+    if #out.pumps == 0 then out.problems[#out.problems + 1] = "No WaterPumpStation: toilets, showers and sinks need water." end
+    return out
+end
+doc("utilities", "[switch_on]", "Power stations (on? demand/capacity) and water pumps (powered?). " ..
+    "api.utilities(true) switches tripped stations back on.", "api.utilities()")
+
+function api.hookup(kind)
+    kind = string.lower(tostring(kind or ""))
+    if kind == "" or kind == "both" or kind == "all" then
+        local p = api.hookup("power")
+        local w = api.hookup("water")
+        return { power = p, water = w }
+    end
+    if not NEEDS[kind] then error("kind must be \"power\", \"water\" or \"both\"", 0) end
+    -- the network: stations (built or ordered) plus every cable/pipe ordered through this API
+    local net, netlist = {}, {}
+    local function add(x, y) local k = x .. "," .. y; if not net[k] then net[k] = true; netlist[#netlist + 1] = { x, y } end end
+    for _, c in ipairs(object_cells(STATION[kind])) do add(c[1], c[2]) end
+    for _, o in ipairs(PLANNED_OBJECTS) do
+        for _, st in ipairs(STATION[kind]) do
+            if o[1] == st then
+                local s = SIZE3[st] or 1
+                for x = o[2], o[2] + s - 1 do for y = o[3], o[3] + s - 1 do add(x, y) end end
+            end
+        end
+    end
+    for k in pairs(PLANNED_UTIL[kind]) do local x, y = string.match(k, "(-?%d+),(-?%d+)"); add(tonumber(x), tonumber(y)) end
+    if #netlist == 0 then
+        local st = STATION[kind][1]
+        error("no " .. st .. " yet. Order one first: api.place_object(\"" .. st .. "\", x, y) (3x3, $5000), then hookup again.", 0)
+    end
+    -- everything that needs this utility: built objects plus ordered ones
+    local users, seen = {}, {}
+    local function user(x, y, t) local k = x .. "," .. y; if not seen[k] then seen[k] = true; users[#users + 1] = { x, y, t } end end
+    for _, c in ipairs(object_cells(NEEDS[kind])) do
+        -- the map's own street lights are outdoors: do not run cable to them
+        local indoor = true
+        if c[3] == "Light" then
+            local ok, ind = pcall(function() return World.GetCell(c[1], c[2]).Ind end)
+            indoor = ok and ind == true
+        end
+        if indoor then user(c[1], c[2], c[3]) end
+    end
+    local needs = {}
+    for _, t in ipairs(NEEDS[kind]) do needs[t] = true end
+    for _, o in ipairs(PLANNED_OBJECTS) do if needs[o[1]] then user(o[2], o[3], o[1]) end end
+    -- nearest first, so long lines do not run over fixtures that could have their own short pipe
+    local function dist(u)
+        local bd
+        for _, c in ipairs(netlist) do
+            local d = math.abs(c[1] - u[1]) + math.abs(c[2] - u[2])
+            if not bd or d < bd then bd = d end
+        end
+        return bd
+    end
+    for _, u in ipairs(users) do u[4] = dist(u) end
+    table.sort(users, function(a, b) return a[4] < b[4] end)
+    local laid, joined = 0, 0
+    for _, u in ipairs(users) do
+        if not net[u[1] .. "," .. u[2]] then
+            local best, bd
+            for _, c in ipairs(netlist) do
+                local d = math.abs(c[1] - u[1]) + math.abs(c[2] - u[2])
+                if not bd or d < bd then best, bd = c, d end
+            end
+            local path = lpath(u[1], u[2], best[1], best[2])
+            table.remove(path)  -- the last cell is already part of the network
+            -- reverse so the end under the object is last (small pipe there)
+            local rev = {}
+            for i = #path, 1, -1 do rev[#rev + 1] = path[i] end
+            laid = laid + lay(kind, rev, seen)
+            for _, c in ipairs(rev) do add(c[1], c[2]) end
+            joined = joined + 1
+        end
+    end
+    return { kind = kind, objects_needing_it = #users, newly_connected = joined, pieces_ordered = laid,
+             note = "Workmen lay " .. (kind == "power" and "cable" or "pipes") .. " over time. Run hookup again after " ..
+                    "adding rooms. Kitchens (cookers, fridges) need power; toilets, showers and sinks need water." }
+end
+doc("hookup", "[power|water|both]", "Connect every object that needs power/water to the nearest cable/pipe or station. " ..
+    "Needs a PowerStation / WaterPumpStation first.", "api.hookup(\"both\")")
+
+-- ---- zoning (native) -----------------------------------------------------------
+local ZONES = {}          -- zones made through this API: {room, x1, y1, x2, y2}
+local ROOM_TYPES = nil    -- cached list from the game
+local ROOM_ALIASES = {
+    cells = "Cell", holding = "HoldingCell", holdingcell = "HoldingCell", infirmary = "MedicalWard",
+    medical = "MedicalWard", medicalward = "MedicalWard", staff = "Staffroom", staffroom = "Staffroom",
+    common = "CommonRoom", commonroom = "CommonRoom", cleaning = "CleaningCupboard", cupboard = "CleaningCupboard",
+    delivery = "Deliveries", deliveries = "Deliveries", garbage = "Garbage", bins = "Garbage",
+    showers = "Shower", kitchen = "Kitchen", canteen = "Canteen", yard = "Yard", office = "Office",
+    storage = "Storage", laundry = "Laundry", workshop = "Workshop", visitation = "Visitation",
+    none = "None", clear = "None", unzone = "None", solitary = "Solitary", security = "Security",
+    wardensoffice = "Office", warden = "Office",
+}
+
+function api.room_types()
+    if not ROOM_TYPES then ROOM_TYPES = split(native("roomtypes"), ",") end
+    return ROOM_TYPES
+end
+doc("room_types", "", "Every room type the game knows (Cell, HoldingCell, Kitchen, Canteen, Shower, Yard, Office...).",
+    "api.room_types()")
+
+local function room_name(name)
+    if type(name) ~= "string" or name == "" then error("room type required, e.g. \"Cell\" or \"Kitchen\"", 0) end
+    local key = string.lower(string.gsub(name, "[%s_%-]", ""))
+    for _, t in ipairs(api.room_types()) do if string.lower(t) == key then return t end end
+    if ROOM_ALIASES[key] then return ROOM_ALIASES[key] end
+    local pool = {}
+    for _, t in ipairs(api.room_types()) do pool[t] = 1 end
+    error("unknown room type '" .. name .. "'. Did you mean " .. tostring(suggest(name, pool)) ..
+          "? See api.room_types()", 0)
+end
+
+local function zoned_cells(x1, y1, x2, y2)
+    local n = 0
+    for x = x1, x2 do for y = y1, y2 do
+        local ok, i = pcall(function() return World.GetCell(x, y).Room.i end)
+        if ok and tonumber(i) and tonumber(i) >= 0 then n = n + 1 end
+    end end
+    return n
+end
+
+function api.zone(room_type, x1, y1, x2, y2)
+    local room = room_name(room_type)
+    x1, y1, x2, y2 = rect(x1, y1, x2, y2, "zone")
+    native(string.format("zone:%s %d %d %d %d", room, x1, y1, x2, y2))
+    -- forget older zones this one covers completely
+    local keep = {}
+    for _, z in ipairs(ZONES) do
+        if not (z.x1 >= x1 and z.x2 <= x2 and z.y1 >= y1 and z.y2 <= y2) then keep[#keep + 1] = z end
+    end
+    ZONES = keep
+    if room ~= "None" then ZONES[#ZONES + 1] = { room = room, x1 = x1, y1 = y1, x2 = x2, y2 = y2 } end
+    local total = (x2 - x1 + 1) * (y2 - y1 + 1)
+    local n = zoned_cells(x1, y1, x2, y2)
+    return { zoned = room, area = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }, cells = total,
+             cells_in_a_room_now = n,
+             note = room == "None" and "Zone removed." or n == 0 and
+                 ("NOTHING WAS ZONED: the game skips walls and unfinished foundation ('Building'). Wait until " ..
+                  "the floor is built (api.progress()) and zone again.") or
+                 ("Zone the INSIDE of a room (not its walls). The game checks each room's needs " ..
+                  "(e.g. a Cell needs a Bed and a Toilet); open the room in the game to see them.") }
+end
+doc("zone", "room_type, x1, y1, x2, y2", "Zone a rectangle as a room (Cell, HoldingCell, Kitchen, Canteen, Shower, Yard, " ..
+    "Office, Staffroom, Deliveries, Garbage, Storage...). Use the building's INSIDE rectangle.",
+    "api.zone(\"Kitchen\", 61, 31, 69, 37)")
+
+-- Bounding box and size of every room on the map, keyed by the game's room id
+-- (types come from a save: see the rooms verb / pa_rooms).
+function api.room_boxes()
+    local w, h = map_size()
+    local boxes = {}
+    for x = 0, w - 1 do
+        for y = 0, h - 1 do
+            local ok, i = pcall(function() return World.GetCell(x, y).Room.i end)
+            i = ok and tonumber(i) or -1
+            if i >= 0 then
+                local k = tostring(i)
+                local b = boxes[k]
+                if not b then b = { x1 = x, y1 = y, x2 = x, y2 = y, cells = 0 }; boxes[k] = b end
+                if x < b.x1 then b.x1 = x end
+                if y < b.y1 then b.y1 = y end
+                if x > b.x2 then b.x2 = x end
+                if y > b.y2 then b.y2 = y end
+                b.cells = b.cells + 1
+            end
+        end
+    end
+    return boxes
+end
+
+function api.unzone(x1, y1, x2, y2) return api.zone("None", x1, y1, x2, y2) end
+doc("unzone", "x1, y1, x2, y2", "Remove zoning from a rectangle.", "api.unzone(61, 31, 69, 37)")
+
+function api.zones()
+    local out = {}
+    for _, z in ipairs(ZONES) do out[#out + 1] = string.format("%s %d,%d-%d,%d", z.room, z.x1, z.y1, z.x2, z.y2) end
+    return out
+end
+doc("zones", "", "Zones made through this API since the prison was loaded (the game does not tell scripts room types).",
+    "api.zones()")
+
+-- ---- game speed and saving (native) ----------------------------------------------
+function api.pause()
+    native("setspeed:0")
+    return { paused = true, note = "Nothing moves while paused, but you can still plan, build orders, zone and hire. " ..
+                                   "Call api.resume() so workmen can work." }
+end
+doc("pause", "", "Pause the game.", "api.pause()")
+
+function api.resume(speed)
+    speed = tonumber(speed) or 1
+    if speed <= 0 or speed > 5 then error("speed must be between 0.1 and 5 (1 = normal)", 0) end
+    native("setspeed:" .. string.format("%.2f", speed))
+    return { paused = false, speed = speed }
+end
+doc("resume", "[speed]", "Unpause (speed 1 = normal, 2-5 = faster).", "api.resume(1)")
+
+function api.save(name)
+    name = tostring(name or "agent")
+    local r = native("save:" .. name)
+    return { save = name, status = r,
+             note = "The game writes the save right after this call (outside scripts). Check api.save_result()." }
+end
+doc("save", "[name]", "Save the prison to saves/<name>.prison (letters, digits, _ and - only).", "api.save(\"agent\")")
+
+function api.save_result()
+    local r = native("saveresult")
+    if r == "pending" then return { done = false } end
+    if string.sub(r or "", 1, 3) == "ok " then return { done = true, ok = true, path = string.sub(r, 4) } end
+    return { done = r ~= "", ok = false, error = r }
+end
+
+-- ---- research (native) -------------------------------------------------------------
+-- name = { requires, department that researches it, cost }
+local RESEARCH = {
+    Maintainance = { "Warden", "Warden", 500 }, Security = { "Warden", "Warden", 500 },
+    Legal = { "Warden", "Warden", 5000 }, MentalHealth = { "Warden", "Warden", 500 },
+    Finance = { "Warden", "Warden", 500 }, Cctv = { "Security", "Security", 2000 },
+    RemoteAccess = { "Security", "Security", 2000 }, Health = { "Warden", "Warden", 500 },
+    Cleaning = { "Maintainance", "Maintainance", 2000 }, GroundsKeeping = { "Maintainance", "Maintainance", 2000 },
+    Deployment = { "Security", "Security", 1000 }, Patrols = { "Security", "Security", 1000 },
+    Dogs = { "Patrols", "Security", 1000 }, PrisonLabour = { "Maintainance", "Maintainance", 1000 },
+    Education = { "Warden", "Warden", 2000 }, LandExpansion = { "Finance", "Finance", 1000 },
+    Contraband = { "Security", "Security", 1000 }, Policy = { "Warden", "Warden", 1000 },
+    Armoury = { "Security", "Security", 2000 }, BodyArmour = { "Armoury", "Security", 1000 },
+    Tazers = { "Armoury", "Security", 1000 }, TazersForEveryone = { "Tazers", "Security", 5000 },
+    BankLoans = { "Finance", "Finance", 500 }, LowerTaxes1 = { "Finance", "Finance", 10000 },
+    LowerTaxes2 = { "LowerTaxes1", "Finance", 50000 }, ExtraGrant = { "Finance", "Finance", 500 },
+    AdvancedManagement = { "Warden", "Warden", 1000 }, Deathrow = { "Legal", "Legal", 10000 },
+    PermanentPunishment = { "Legal", "Legal", 5000 }, RemoveMinCellSize = { "Legal", "Legal", 10000 },
+    ReduceExecutionLiability = { "Deathrow", "Legal", 10000 }, LegalPrep = { "Legal", "Legal", 50000 },
+    LegalDefense = { "LegalPrep", "Legal", 50000 }, GuardTowers = { "Armoury", "Security", 5000 },
+    NonLethalSniper = { "GuardTowers", "Security", 5000 },
+}
+local DEPARTMENT_HEAD = { Warden = "Warden", Security = "Chief", Maintainance = "Foreman", Finance = "Accountant",
+                          Legal = "Lawyer", MentalHealth = "Psychologist" }
+local UNLOCKS = { Maintainance = "Foreman", Security = "Chief", Legal = "Lawyer", MentalHealth = "Psychologist",
+                  Finance = "Accountant", Health = "Doctor", Cleaning = "Janitor", GroundsKeeping = "Gardener",
+                  Dogs = "DogHandler", Armoury = "ArmedGuard", GuardTowers = "Sniper", Cctv = "CCTV",
+                  RemoteAccess = "remote doors", Education = "Teacher/classes", PrisonLabour = "workshop jobs" }
+
+local function research_state()
+    local out = {}
+    for _, item in ipairs(split(native("researchlist"), ",")) do
+        local name, desired, pct = string.match(item, "^([^:]+):(%d):(%d+)$")
+        if name then out[name] = { researching = desired == "1", percent = tonumber(pct) } end
+    end
+    return out
+end
+
+local function researched(state, name)
+    return name == "" or name == nil or (state[name] and state[name].percent >= 100)
+end
+
+function api.research(name)
+    local st = research_state()
+    if name then
+        local key
+        for k in pairs(RESEARCH) do if string.lower(k) == string.lower(tostring(name)) then key = k end end
+        if not key then
+            error("unknown research '" .. tostring(name) .. "'. Did you mean " .. tostring(suggest(tostring(name), RESEARCH)) ..
+                  "? api.research() lists them.", 0)
+        end
+        local r = RESEARCH[key]
+        if researched(st, key) then return { research = key, status = "already done" } end
+        if st[key] and st[key].researching then return { research = key, status = "already in progress", percent = st[key].percent } end
+        if not researched(st, r[1]) then error(key .. " needs " .. r[1] .. " researched first", 0) end
+        local head = DEPARTMENT_HEAD[r[2]]
+        if head and api.count(head)[head] == 0 then
+            error(key .. " is researched by the " .. head .. ". Hire one first (api.hire(\"" .. head .. "\")) and give them an Office.", 0)
+        end
+        local bal = tonumber(world_get("Balance")) or 0
+        if bal < r[3] then error(key .. " costs $" .. r[3] .. " but you have $" .. math.floor(bal), 0) end
+        native("research:" .. key)
+        return { research = key, status = "started", cost = r[3], researched_by = head,
+                 note = "The " .. tostring(head) .. " works on it over time (they need an Office). Check api.research()." }
+    end
+    local list = {}
+    for k, r in pairs(RESEARCH) do
+        local s = st[k] or { percent = 0 }
+        local status
+        if s.percent >= 100 then status = "done"
+        elseif s.researching then status = "in progress " .. s.percent .. "%"
+        elseif researched(st, r[1]) then status = "available"
+        else status = "locked (needs " .. r[1] .. ")" end
+        list[#list + 1] = { name = k, status = status, cost = r[3], by = DEPARTMENT_HEAD[r[2]], unlocks = UNLOCKS[k] }
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return { research = list, warden_hired = researched(st, "Warden"),
+             how = "api.research(\"Health\") starts one. The cost is paid when it starts." }
+end
+doc("research", "[name]", "No name: list research with status. With a name: start researching it.", "api.research(\"Health\")")
+
+-- ---- hiring ------------------------------------------------------------------------
+-- price from the game's materials.txt; research needed before the game lets you hire them
+local STAFF = {
+    Workman = { 500 }, Guard = { 500 }, Cook = { 500 }, Warden = { 1000, nil, true },
+    Doctor = { 1000, "Health" }, Foreman = { 1000, "Maintainance", true }, Chief = { 1000, "Security", true },
+    Accountant = { 1000, "Finance", true }, Psychologist = { 1000, "MentalHealth", true },
+    Lawyer = { 5000, "Legal", true }, Janitor = { 500, "Cleaning" }, Gardener = { 500, "GroundsKeeping" },
+    DogHandler = { 500, "Dogs" }, ArmedGuard = { 1500, "Armoury" }, Sniper = { 2000, "GuardTowers" },
+}
+
+local function arrival_point()
+    local w, h = map_size()
+    local xs = {}
+    for x = 0, w - 1 do
+        local m = Object.GetMaterial(x, 0) or ""
+        if string.sub(m, 1, 4) == "Road" then xs[#xs + 1] = x end
+    end
+    if #xs == 0 then return math.floor(w / 2) + 0.5, 1.5 end
+    return xs[math.floor((#xs + 1) / 2)] + 0.5, 1.5
+end
+
+function api.hire(kind, count)
+    count = num(count or 1, "count")
+    if count < 1 or count > 20 then error("count must be 1..20", 0) end
+    local key
+    for k in pairs(STAFF) do if string.lower(k) == string.lower(tostring(kind)) then key = k end end
+    if not key then
+        local names = {}
+        for k in pairs(STAFF) do names[#names + 1] = k end
+        table.sort(names)
+        error("unknown staff type '" .. tostring(kind) .. "'. Choose one of: " .. table.concat(names, ", "), 0)
+    end
+    local s = STAFF[key]
+    if s[2] then
+        if not NATIVE then error(key .. " needs " .. s[2] .. " research, and research cannot be checked without bridge DLL 0.3", 0) end
+        local st = research_state()
+        if not researched(st, s[2]) then
+            error(key .. " needs the " .. s[2] .. " research first: api.research(\"" .. s[2] .. "\")", 0)
+        end
+    end
+    if s[3] then
+        local have = api.count(key)[key]
+        if have + count > 1 then error("you can only have one " .. key .. " (you have " .. have .. ")", 0) end
+    end
+    local cost = s[1] * count
+    local bal = tonumber(world_get("Balance")) or 0
+    if bal < cost then error("hiring " .. count .. " " .. key .. " costs $" .. cost .. " but you have $" .. math.floor(bal), 0) end
+    local x, y = arrival_point()
+    local made = 0
+    for i = 1, count do
+        if Object.Spawn(key, x + (i - 1) % 3, y + math.floor((i - 1) / 3)) then made = made + 1 end
+    end
+    World.Balance = bal - s[1] * made
+    return { hired = made, type = key, cost = s[1] * made, money_left = math.floor(bal - s[1] * made),
+             arrives_at = { x = math.floor(x), y = math.floor(y) },
+             note = "They walk in from the road. Staff are paid daily wages by the game." }
+end
+doc("hire", "type, [count]", "Hire staff (Guard, Cook, Workman, Warden; Doctor/Janitor/etc. after research). Costs the game's hire price.",
+    "api.hire(\"Guard\", 2)")
+
+function api.camera() error("Camera control is not available from scripts. Ask the human to look.", 0) end
 
 -- ---- introspection -------------------------------------------------------------
 function api.describe(t)
@@ -753,15 +1443,18 @@ function api.help()
         about = "Prison Architect agent API. Coordinates are map cells: x to the right, y down, (0,0) top-left. " ..
                 "Construction and objects are carried out by workmen and cost money, like a player's orders.",
         functions = HELP,
-        not_available = { "zoning rooms", "hiring staff", "saving", "camera", "pause/unpause" },
+        native = NATIVE,
+        not_available = NATIVE and { "camera", "regime (daily schedule)" } or
+            { "zoning, saving, pause/resume and research need bridge DLL 0.3", "camera", "regime" },
         materials = { walls = "BrickWall, ConcreteWall, Fence, PerimeterWall",
                       floors = "ConcreteFloor, WoodenFloor, CeramicFloor, PavingStone",
-                      foundation = "Building (brick), BuildingConcrete" },
+                      not_materials = "Building, Demolish, CancelJobs... are UI tools and get built as junk" },
         objects = "Bed, Toilet, JailDoor, Door, StaffDoor, Cooker, Fridge, Sink, Table, Bench, ServingTable, " ..
                   "ShowerHead, Drain, WeightsBench, PhoneBooth, Tv, OfficeDesk, Chair, FilingCabinet, Light",
-        workflow = { "api.state()", "api.map()", "api.find_space(w, h)", "api.building(...)",
-                     "api.furnish(kind, inside...)", "api.progress() until finished", "ask the human to zone the room",
-                     "api.staff() / api.objects(\"Prisoner\") to check on people" },
+        workflow = { "api.state()", "api.overview()", "api.find_space(w, h)",
+                     "api.room(kind, x1, y1, x2, y2) (walls+floor+door+furniture+zone)",
+                     "api.progress() until finished (the game must not be paused)", "api.hire(type, count)",
+                     "api.research(name) once you have a Warden and an Office", "api.save(name)" },
     }
 end
 doc("help", "", "This list.", "api.help()")
@@ -844,18 +1537,25 @@ end
 function Create()
 end
 
-function Update(timePassed)
-    if bridged == nil then
-        local r = Game.DebugOut("\1hello:" .. VERSION)
-        bridged = (type(r) == "string")
-    end
-    if not bridged then return end
+-- Drains waiting requests. Update() calls it every tick; DLL 0.3 also calls it
+-- from the render loop while the game is paused.
+local function pump()
     for _ = 1, MAX_REQUESTS_PER_TICK do
-        local line = Game.DebugOut("\1poll")
+        local line = DebugOut("\1poll")
         if type(line) ~= "string" then break end
         handle(line)
     end
 end
 
+function Update(timePassed)
+    if bridged == nil then
+        local r = DebugOut("\1hello:" .. VERSION, pump)
+        bridged = (type(r) == "string")
+        NATIVE = bridged and string.find(r, " native", 1, true) ~= nil
+    end
+    if not bridged then return end
+    pump()
+end
+
 -- exposed for tests
-PA_BRIDGE = { json = json, api = api, handle = handle, VERSION = VERSION }
+PA_BRIDGE = { json = json, api = api, handle = handle, VERSION = VERSION, pump = pump }

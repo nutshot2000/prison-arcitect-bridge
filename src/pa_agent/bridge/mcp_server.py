@@ -9,25 +9,29 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 import traceback
-from pathlib import Path
 from typing import Any, Callable
 
 from .client import BridgeClient, BridgeError
+from .easy import Easy, EasyError, explain
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "prison-architect-bridge", "version": "0.3.0"}
+SERVER_INFO = {"name": "prison-architect-bridge", "version": "0.4.0"}
 
-INSTRUCTIONS = """You are playing a live game of Prison Architect.
-Start with pa_help (what you can do) and pa_state (the prison right now), then
-pa_map to see the layout (+ marks ordered work not built yet), pa_progress to\nfollow construction. Coordinates are map cells: x to the right, y down.
-Build with pa_building (walls + floor + door), pa_furnish (furniture for a room
-kind), pa_cell_block (a row of cells), or the lower-level pa_build_* and
-pa_place_object. Everything is built by workmen over time and costs money.
-Zoning rooms, hiring staff, pausing, saving and the camera are NOT available:
-when you need a room zoned, tell the human exactly which room and rectangle.
-pa_api calls any helper from pa_help by name; pa_lua runs raw Lua for experts."""
+INSTRUCTIONS = """You are playing a live game of Prison Architect. Coordinates are map cells:
+x to the right, y down, (0,0) top-left.
+Loop: pa_status -> pa_next (what the prison needs, in order) -> do ONE thing ->
+pa_wait (let workmen build) -> pa_status.
+Build a whole room in one call with pa_room (walls + floor + door + furniture +
+zone; the rectangle includes the walls). pa_cells builds a row of cells. Find
+empty ground with pa_space; see the map with pa_look. After adding rooms, call
+pa_hookup so cookers/fridges get power and toilets/showers/sinks get water
+(needs a PowerStation and a WaterPumpStation, placed with pa_place_object).
+Hire with pa_hire (Guard, Cook, Workman, Warden; others after pa_research).
+pa_rooms says which rooms the game thinks are missing something.
+Nothing is built while the game is paused: pa_resume. pa_save saves.
+Every tool answers in a few lines; errors come with a HINT line.
+Not available: camera, regime. pa_lua runs raw Lua for experts."""
 
 
 def _schema(props: dict, required: list[str]) -> dict:
@@ -41,7 +45,8 @@ RECT = {"x1": INT, "y1": INT, "x2": INT, "y2": INT}
 
 class Server:
     def __init__(self, bridge: BridgeClient | None = None):
-        self.bridge = bridge or BridgeClient()
+        self.bridge = bridge or BridgeClient(timeout=20)
+        self.easy = Easy(self.bridge)
         self.tools: dict[str, tuple[str, dict, Callable[[dict], Any]]] = {}
         self._register()
 
@@ -56,9 +61,58 @@ class Server:
         return self.bridge.call(fn, *args)
 
     def _register(self):
-        @self.tool("pa_status", "Check the connection: bridge loaded, game script running, game time and speed.",
+        easy = self.easy
+
+        def verb(name: str, verb_name: str, description: str, props: dict, required: list[str], order: list[str]):
+            @self.tool(name, description, _schema(props, required))
+            def _run(a, verb_name=verb_name, order=order):
+                args = [str(a[k]) for k in order if k in a and a[k] is not None]
+                return easy.run(verb_name, args)
+
+        verb("pa_status", "status", "START HERE. Money, clock, paused?, prisoners, beds, staff, rooms you made, "
+             "construction progress. A few lines of text.", {}, [], [])
+        verb("pa_next", "next", "What the prison needs next, as a numbered list of concrete commands.", {}, [], [])
+        verb("pa_look", "look", "Map. No arguments: small picture of the whole map (1 char = 3x3 cells). "
+             "With x1,y1,x2,y2: exact cells. # wall, _ floor, . ground, = road, + ordered not built.",
+             RECT, [], list(RECT))
+        verb("pa_space", "space", "Find empty ground for a width x height room (walls included), optionally near a point.",
+             {"width": INT, "height": INT, "near_x": INT, "near_y": INT}, ["width", "height"],
+             ["width", "height", "near_x", "near_y"])
+        verb("pa_room", "room", "Build a whole room in one call: walls + floor + door + furniture + zone. The rectangle "
+             "INCLUDES the walls. kind: holding, cell, kitchen, canteen, shower, yard, office, staffroom, infirmary, "
+             "storage, deliveries, garbage. door_side: north/south/east/west. Good sizes: holding 9x8, kitchen 9x8, "
+             "canteen 12x10, shower 7x6, yard 16x12 (outdoor), office 6x6.",
+             {"kind": STR, **RECT, "door_side": STR}, ["kind", *RECT], ["kind", *RECT, "door_side"])
+        verb("pa_cells", "cells", "A row of 3x3 prison cells (bed, toilet, jail door, zoned Cell) with a corridor below. "
+             "Uses (count*4+1) x 7 cells from x,y.", {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"],
+             ["x", "y", "count"])
+        verb("pa_hookup", "hookup", "Connect everything that needs power (cookers, fridges, lights, TVs) or water "
+             "(toilets, showers, sinks) to the nearest cable/pipe or station. Run after adding rooms.",
+             {"kind": {"type": "string", "enum": ["both", "power", "water"]}}, [], ["kind"])
+        verb("pa_power", "power", "Power stations (on/off, demand vs capacity) and whether the water pump has power "
+             "(no power = no water). action \"on\" switches tripped stations back on.",
+             {"action": {"type": "string", "enum": ["", "on"]}}, [], ["action"])
+        verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
+             {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
+        verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",
+             {}, [], [])
+        verb("pa_hire", "hire", "Hire staff: Guard, Cook, Workman, Warden (always); Doctor, Janitor, Gardener, Foreman, "
+             "Chief, Accountant, Psychologist, Lawyer, DogHandler, ArmedGuard after research. Costs the game's price.",
+             {"type": STR, "count": INT}, ["type"], ["type", "count"])
+        verb("pa_research", "research", "No name: list research and its status. With a name: start it "
+             "(needs a Warden with an Office; the cost is paid when it starts).", {"name": STR}, [], ["name"])
+        verb("pa_pause", "pause", "Pause the game (you can still plan, build orders, zone, hire).", {}, [], [])
+        verb("pa_resume", "resume", "Unpause. speed 1 = normal, up to 5.", {"speed": {"type": "number"}}, [], ["speed"])
+        verb("pa_wait", "wait", "Let the game run for some real seconds (default 60, max 600) at a speed (default 3), "
+             "then report what got built.", {"seconds": INT, "speed": {"type": "number"}}, [], ["seconds", "speed"])
+        verb("pa_progress", "progress", "What you ordered that is built vs still waiting.", {}, [], [])
+        verb("pa_save", "save", "Save the prison to saves/<name>.prison.", {"name": STR}, [], ["name"])
+        verb("pa_help", "help", "List the easy verbs, or explain one (verb: room, cells, hire...).", {"verb": STR}, [],
+             ["verb"])
+
+        @self.tool("pa_connection", "Diagnose the connection: bridge DLL loaded, game script running, pump, clients.",
                    _schema({}, []))
-        def _status(a):
+        def _connection(a):
             st = self.bridge.status()
             try:
                 st["game"] = self.bridge.ping()
@@ -66,63 +120,7 @@ class Server:
                 st["game_error"] = str(exc)
             return st
 
-        @self.tool("pa_help", "List every game helper with its arguments and an example. Call this first.",
-                   _schema({}, []))
-        def _help(a):
-            return self._call("help")
-
-        @self.tool("pa_state", "Live summary of the prison: time, speed, map size, prisoners, cell capacity.",
-                   _schema({}, []))
-        def _state(a):
-            return self._call("state")
-
-        @self.tool("pa_map", "Text map of an area (default whole map): # wall, _ floor, . open ground, = road.",
-                   _schema({"x1": INT, "y1": INT, "x2": INT, "y2": INT}, []))
-        def _map(a):
-            if all(k in a for k in RECT):
-                return self._call("map", a["x1"], a["y1"], a["x2"], a["y2"])
-            return self._call("map")
-
-        @self.tool("pa_find_space", "Find an empty area of open ground of the given size, optionally near a point.",
-                   _schema({"width": INT, "height": INT, "near_x": INT, "near_y": INT}, ["width", "height"]))
-        def _space(a):
-            args = [a["width"], a["height"]]
-            if "near_x" in a and "near_y" in a:
-                args += [a["near_x"], a["near_y"]]
-            return self._call("find_space", *args)
-
-        @self.tool("pa_building", "Build a room: walls around the rectangle, a floor inside and a door. "
-                   "door_side: north/south/east/west (default south). Returns the inside rectangle.",
-                   _schema({**RECT, "door_side": STR, "door": STR, "wall": STR, "floor": STR}, list(RECT)))
-        def _building(a):
-            return self._call("building", a["x1"], a["y1"], a["x2"], a["y2"], a.get("door_side", "south"),
-                              a.get("door", "Door"), a.get("wall", "BrickWall"), a.get("floor", "ConcreteFloor"))
-
-        @self.tool("pa_furnish", "Place the right furniture in a room's inside rectangle. kind: kitchen, canteen, "
-                   "shower, yard, holding, cell, office, staffroom.",
-                   _schema({"kind": STR, **RECT}, ["kind", *RECT]))
-        def _furnish(a):
-            return self._call("furnish", a["kind"], a["x1"], a["y1"], a["x2"], a["y2"])
-
-        @self.tool("pa_cell_block", "Build a row of 3x3 cells (bed, toilet, jail door) opening south onto a corridor.",
-                   _schema({"x": INT, "y": INT, "count": INT}, ["x", "y", "count"]))
-        def _cells(a):
-            return self._call("cell_block", a["x"], a["y"], a["count"])
-
-        @self.tool("pa_progress", "What you ordered that is finished vs still pending (construction and objects).",
-                   _schema({}, []))
-        def _progress(a):
-            return self._call("progress")
-
-        @self.tool("pa_objects", "List every object/person of a type with positions (Workman, Prisoner, Guard, Bed...).",
-                   _schema({"type": STR, "limit": INT}, ["type"]))
-        def _objects(a):
-            return self._call("objects", a["type"], a.get("limit", 200))
-
-        @self.tool("pa_staff", "How many of each kind of staff you have.", _schema({}, []))
-        def _staff(a):
-            return self._call("staff")
-
+        # ---- lower level, for experts -------------------------------------
         @self.tool("pa_build_area", "Fill a rectangle with a material (ConcreteFloor, PavingStone, Building...).",
                    _schema({"material": STR, **RECT}, ["material", *RECT]))
         def _area(a):
@@ -138,13 +136,18 @@ class Server:
         def _line(a):
             return self._call("build_line", a["material"], a["x1"], a["y1"], a["x2"], a["y2"])
 
-        @self.tool("pa_place_object", "Buy and install one object (Bed, Toilet, JailDoor, Door, Cooker, ...). "
-                   "ox,oy = facing, default 0,1.",
+        @self.tool("pa_place_object", "Buy and install one object (Bed, Toilet, JailDoor, Door, Cooker, PowerStation, "
+                   "WaterPumpStation, Capacitor, ElectricalCable, PipeLarge, PipeSmall...). ox,oy = facing, default 0,1.",
                    _schema({"object": STR, "x": INT, "y": INT, "ox": INT, "oy": INT}, ["object", "x", "y"]))
         def _place(a):
             return self._call("place_object", a["object"], a["x"], a["y"], a.get("ox", 0), a.get("oy", 1))
 
-        @self.tool("pa_api", "Call any helper listed by pa_help by name, with a list of arguments.",
+        @self.tool("pa_objects", "List every object/person of a type with positions (Workman, Prisoner, Guard, Bed...).",
+                   _schema({"type": STR, "limit": INT}, ["type"]))
+        def _objects(a):
+            return self._call("objects", a["type"], a.get("limit", 200))
+
+        @self.tool("pa_api", "Call any api.* helper by name with a list of arguments (api.help() lists them).",
                    _schema({"fn": STR, "args": {"type": "array"}}, ["fn"]))
         def _api(a):
             return self._call(a["fn"], *(a.get("args") or []))
@@ -156,28 +159,6 @@ class Server:
             result = self.bridge.exec(a["code"], a.get("timeout"))
             logs = self.bridge.drain_logs()
             return {"result": result, "logs": logs} if logs else result
-
-    # ---- snapshot ---------------------------------------------------------
-    def snapshot(self, full: bool = False) -> dict:
-        from ..config import user_data_directory
-        from ..state import load_prison, summarize
-        saves = user_data_directory() / "saves"
-        name = "pa_agent_snapshot"
-        target = saves / f"{name}.prison"
-        before = target.stat().st_mtime if target.exists() else 0.0
-        self.bridge.call("save", name)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if target.exists() and target.stat().st_mtime > before:
-                time.sleep(0.3)  # let the write finish
-                break
-            time.sleep(0.2)
-        else:
-            candidates = sorted(saves.glob("*.prison"), key=lambda p: p.stat().st_mtime)
-            raise BridgeError(f"save did not appear at {target}; newest save is "
-                              f"{candidates[-1].name if candidates else 'none'}")
-        loaded = load_prison(target)
-        return loaded.root.to_dict() if full else summarize(loaded.root)
 
     # ---- JSON-RPC ---------------------------------------------------------
     def handle(self, msg: dict) -> dict | None:
@@ -200,8 +181,13 @@ class Server:
                 return self._err(mid, -32602, f"unknown tool {name}")
             try:
                 result = self.tools[name][2](params.get("arguments") or {})
-                text = json.dumps(result, indent=1, default=str)
+                text = result if isinstance(result, str) else json.dumps(result, indent=1, default=str)
                 return self._ok(mid, {"content": [{"type": "text", "text": text}], "isError": False})
+            except EasyError as exc:
+                return self._ok(mid, {"content": [{"type": "text", "text": f"ERROR: {exc}"}], "isError": True})
+            except BridgeError as exc:
+                return self._ok(mid, {"content": [{"type": "text", "text": "ERROR: " + explain(name, str(exc))}],
+                                      "isError": True})
             except Exception as exc:  # reported to the model, not a protocol error
                 return self._ok(mid, {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
                                       "isError": True})
