@@ -80,3 +80,53 @@ Bridge DLL 0.2.1 (installed as `GLU32.dll`), mod AI Bridge (runtime 0.2.0), user
 - `pa-agent lua "return api.build_wall_rect('BrickWall', 10, 10, 15, 14)"` → `{"queued": 18}` (correct outline count). Construction by workmen not yet visually confirmed.
 
 Not yet tested live: MCP server with a real client, `pa_snapshot` (`Game.SaveMap` path), `api.zone`, `api.camera`, behavior while paused.
+
+# Validation — 28-29 September 2026: bridge 0.4 played live
+
+Setup: DLL 0.3.0 → 0.3.2 (built with zig, `native/build.sh`), mod world.lua 0.4.0, sandbox prison 150x120 with the
+road at x 139-143. Played for 9 game days through the bridge (CLI `pa-agent play`, hot-reloaded with
+`pa-agent reload-mod`). 42 Python tests + the Lua tests (`mod/test_world.lua`, run under LuaJIT via lupa) pass.
+
+## Verified live
+
+| Feature | Evidence |
+| --- | --- |
+| Several clients at once (MCP server + CLI + scripts) | `clients` in STATUS; explore script no longer hangs |
+| Requests while paused (frame-hook pump) | clock frozen, `pumped` counter rising, answers returned |
+| Pause / resume / speed (`world+0x88`) | clock stops/advances; game UI follows |
+| Money (`World.Balance`), clock (`TimeIndex` = game minutes) | matches the in-game header |
+| Zoning (game's SetZoneRoom handler, no campaign) | save shows `RoomType HoldingCell/Cell/Kitchen/...`; game uses the rooms |
+| Save (Save-menu writer) | `saves/agent_test.prison` written in ~1 s |
+| Research list/start (game's StartResearch, pays the cost) | Health started by the Warden, finished, Doctors hired |
+| Intake (`intake beds` → game's SetIntakeType 1) | game's Intake panel: "Fill to capacity, closed to new inmates" |
+| Screenshots (glReadPixels from the render loop, DLL 0.3.1) | PNGs of the live prison while the window was behind others |
+| Hiring at the game's price (Object.Spawn + Balance) | staff walk in from the road, balance drops by the listed price |
+| Cables / pipes (PlaceObject ElectricalCable / PipeLarge / PipeSmall) | appear in the save's Electricity / Water sections |
+| Power stations: player switch is `Switch`, trip sets `Overloaded` | 1 = over 50 demand, 2 = two stations on one grid |
+| PowerSwitch split (`switch x y off`) | kitchen grid 40/50, main 30/50, pump 26/50, all ON |
+| Perimeter fence with RoadGate | escapes fell from 23/day to 0 |
+| report / utilmap (from a fresh save) | matched what the game showed (drops, bolts, injured staff) |
+
+## Bugs found by playing and fixed (each has a regression test)
+
+- Furniture anchor: an object ordered at x covers x..x+w-1 (was treated as right-anchored: tables through walls,
+  benches in doorways).
+- Cell block floor ordered after the dividing walls replaced them (one long room, no cells).
+- Walls ordered on door cells were built over finished doors (kitchen and shower sealed).
+- Walls + floor built separately stay outdoor (`Ind` unset): prisoners reported `FailedToFindCell`. Rooms are now marked
+  indoor like a finished foundation.
+- `Building`, `Demolish`, `CancelJobs` are UI tools; the work queue builds them as literal materials. Refused now.
+- hookup: capacitor is not a source; the map's street lights (ExternalPower) must not be cabled; existing cable/pipe
+  is read from a save and reused (was re-buying 150+ pieces after a reload).
+- Water pump needs power; a power station trips above 50 (a cooker ≈ 10); two stations on one grid trip each other.
+- find_space offered ground outside the fence, on top of power stations, and on the yard.
+- The easy report read `"true"` strings as false (parser keeps text).
+
+## Still open
+
+- Intake type 2/3 (max total, per day) set but not yet observed through a day change.
+- `utilmap` draws objects over the cable under them (read neighbours).
+- Canteen seat count vs prisoners is estimated (4 per bench), not measured.
+- Camera control and the regime are not available.
+- The first test prison had 41 escapes and 6 deaths before intake/fence/beds were fixed; the build order in
+  `docs/START-HERE.md` avoids that.
