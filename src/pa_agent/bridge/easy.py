@@ -63,7 +63,8 @@ VERB_HELP = {
     "space": ("space <w> <h> [near_x near_y]", "Find empty ground for a w x h building (walls included)."),
     "room": ("room <kind> <x1> <y1> <x2> <y2> [door_side]",
              "Build a whole room: walls + floor + door + furniture + zone. The rectangle INCLUDES the walls.\n"
-             "  kinds: holding cell kitchen canteen shower yard office staffroom infirmary storage deliveries garbage\n"
+             "  kinds: holding kitchen canteen shower yard office staffroom infirmary dormitory visitation storage\n"
+             "         deliveries garbage\n"
              "  door_side: north south east west (default south). Yards/deliveries/garbage have no walls.\n"
              "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6."),
     "cells": ("cells <x> <y> <count>",
@@ -85,6 +86,9 @@ VERB_HELP = {
     "power": ("power [on]",
               "Power stations (on/off, demand vs capacity 50 each) and whether water pumps have power.\n"
               "  `power on` resets tripped stations. Each station feeds up to 50 on its own grid; stations must not touch."),
+    "solitary": ("solitary <x> <y> <count>",
+                 "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor below; (count*2+1) x 5 cells.\n"
+                 "  Without them punishments pile up and the prison temperature (riot risk) climbs."),
     "zone": ("zone <RoomType> <x1> <y1> <x2> <y2>", "Zone a rectangle (use the INSIDE of a room). `roomtypes` lists types."),
     "unzone": ("unzone <x1> <y1> <x2> <y2>", "Remove zoning."),
     "roomtypes": ("roomtypes", "Every room type the game knows."),
@@ -330,6 +334,12 @@ class Easy:
     def v_switch(self, x: str, y: str, state: str) -> str:
         r = self.call("switch", *self._ints(x, y), state.lower() in ("on", "true", "1"))
         return f"switch at {r['switch']} is now {'ON' if r['on'] else 'OFF'}"
+
+    def v_solitary(self, x: str, y: str, count: str = "6") -> str:
+        r = self.call("solitary_block", *self._ints(x, y, count))
+        c = r["corridor"]
+        return (f"{len(r['cells'])} solitary cells ordered (SolitaryDoor each){', zoned Solitary' if r['zoned'] else ''}.\n"
+                f"corridor x {c['x1']}..{c['x2']}, y {c['y1']}..{c['y2']} - keep it clear. Punished prisoners go here.")
 
     def v_zone(self, room_type: str, x1: str, y1: str, x2: str, y2: str) -> str:
         r = self.call("zone", room_type, *self._ints(x1, y1, x2, y2))

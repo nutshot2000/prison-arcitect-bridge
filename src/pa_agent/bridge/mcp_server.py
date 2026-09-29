@@ -80,7 +80,7 @@ class Server:
              ["width", "height", "near_x", "near_y"])
         verb("pa_room", "room", "Build a whole room in one call: walls + floor + door + furniture + zone. The rectangle "
              "INCLUDES the walls. kind: holding, cell, kitchen, canteen, shower, yard, office, staffroom, infirmary, "
-             "storage, deliveries, garbage. door_side: north/south/east/west. Good sizes: holding 9x8, kitchen 9x8, "
+             "dormitory, visitation, storage, deliveries, garbage. door_side: north/south/east/west. Good sizes: holding 9x8, kitchen 9x8, "
              "canteen 12x10, shower 7x6, yard 16x12 (outdoor), office 6x6.",
              {"kind": STR, **RECT, "door_side": STR}, ["kind", *RECT], ["kind", *RECT, "door_side"])
         verb("pa_cells", "cells", "A row of 3x3 prison cells (bed, toilet, jail door, zoned Cell) with a corridor below. "
@@ -111,6 +111,9 @@ class Server:
              {"mode": {"type": "string", "enum": ["beds", "none", "max", "perday", "all"]}, "n": INT}, [], ["mode", "n"])
         verb("pa_todo", "todo", "The game's To-do panel as text: intake mode, parole, visitors waiting, solitary queue, "
              "injured people, prison temperature (riot risk).", {}, [], [])
+        verb("pa_solitary", "solitary", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor "
+             "below, (count*2+1) x 5 cells. Needed for punishments; without it the riot risk climbs.",
+             {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"], ["x", "y", "count"])
         verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",

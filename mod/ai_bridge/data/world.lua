@@ -676,6 +676,10 @@ function api.perimeter(x1, y1, x2, y2, material)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "perimeter")
     material = material or "Fence"
     local fence, gates = 0, {}
+    -- gates already on the map (live: re-running the fence ordered a second gate next to the first)
+    local existing = {}
+    local okg, eg = pcall(api.objects, "RoadGate", 50)
+    if okg then for _, o in ipairs(eg.objects) do existing[#existing + 1] = o end end
     local function side(y)  -- horizontal side: fence, road runs become gates
         -- A RoadGate is 7 cells wide (ordered at its left cell) and roads are often 5
         -- wide, so the gate also covers the cells beside the road. Find the gate spans
@@ -688,9 +692,19 @@ function api.perimeter(x1, y1, x2, y2, material)
                 local s = x
                 while x <= x2 and is_road(x, y) do x = x + 1 end
                 local gx = math.max(x1, s - math.floor(math.max(0, 7 - (x - s)) / 2))
+                local have
+                for _, o in ipairs(existing) do
+                    -- a RoadGate's Pos is its centre: it covers Pos.x-3.5 .. Pos.x+3.5 on row floor(Pos.y)
+                    if math.floor(o.y) == y and o.x - 3.5 <= s and o.x + 3.5 >= x then have = o end
+                end
+                if have then
+                    gx = math.floor(have.x - 3.5)
+                    gates[#gates + 1] = gx .. "," .. y .. " (already there)"
+                else
+                    req("PlaceObject", "RoadGate", gx, y, 0, 1)
+                    gates[#gates + 1] = gx .. "," .. y .. " (road " .. (x - s) .. " wide)"
+                end
                 for gc = gx, gx + 6 do gate_at[gc] = true end
-                req("PlaceObject", "RoadGate", gx, y, 0, 1)
-                gates[#gates + 1] = gx .. "," .. y .. " (road " .. (x - s) .. " wide)"
             else
                 x = x + 1
             end
@@ -813,8 +827,21 @@ LAYOUTS.office = function(x1, y1, x2, y2, out)
 end
 
 LAYOUTS.staffroom = function(x1, y1, x2, y2, out)
-    put(out, "Tv", x1, y1); put(out, "SofaChairDouble", x1, y1 + 2)
-    return "Staff room: TV and sofa. Zone as Staffroom."
+    -- game requirements (materials.txt): indoor, at least 4x4, a sofa AND a DrinkMachine
+    if x2 - x1 < 3 or y2 - y1 < 3 then error("a staff room needs at least 4x4 cells inside", 0) end
+    put(out, "Tv", x1, y1); put(out, "DrinkMachine", x2, y1); put(out, "SofaChairDouble", x1, y1 + 2)
+    return "Staff room: sofa, drink machine (required) and TV. Tired staff rest here."
+end
+
+-- Visitation: rows of VisitorTables (3x2); the game requires at least one, indoors.
+LAYOUTS.visitation = function(x1, y1, x2, y2, out)
+    local y = y1
+    while y + 1 <= y2 do
+        local x = x1
+        while x + 2 <= x2 do put(out, "VisitorTable", x, y); x = x + 4 end
+        y = y + 3
+    end
+    return "Visitation: visitor tables. Families visit here (8am-8pm); it calms prisoners."
 end
 
 LAYOUTS.infirmary = function(x1, y1, x2, y2, out)
@@ -832,7 +859,7 @@ local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put i
 local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower", yard = "Yard",
                     holding = "HoldingCell", cell = "Cell", office = "Office", staffroom = "Staffroom",
                     infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage",
-                    dormitory = "Dormitory" }
+                    dormitory = "Dormitory", visitation = "Visitation" }
 
 local function kind_names()
     local names = {}
@@ -892,14 +919,14 @@ doc("room", "kind, x1, y1, x2, y2, [door_side]",
     "api.room(\"kitchen\", 60, 30, 70, 38, \"south\")")
 
 -- A row of cells facing south onto a corridor. Each cell is 3 wide x 3 deep inside.
-function api.cell_block(x, y, count, door)
+-- A row of small rooms opening south onto a 2-cell corridor: walls, dividers,
+-- floor, furniture, a door per room and the zone. Used for cells and solitary.
+local function room_row(x, y, count, cw, ch, door, zone, furnish, what)
     x, y, count = num(x, "x"), num(y, "y"), num(count or 4, "count")
     if count < 1 or count > 30 then error("count must be 1..30", 0) end
-    door = door or "JailDoor"
-    local cw, ch = 3, 3
     local x2 = x + count * (cw + 1)
     local y2 = y + ch + 1
-    rect(x, y, x2, y2 + 2, "cell block (with its 2-cell corridor)")
+    rect(x, y, x2, y2 + 2, what .. " (with its 2-cell corridor)")
     -- floors first: a later order for the same cell replaces an earlier one, so the
     -- dividing walls must be ordered after the floor (live bug: cells had no dividers)
     api.build_area("ConcreteFloor", x + 1, y + 1, x2 - 1, y2 - 1)
@@ -907,25 +934,40 @@ function api.cell_block(x, y, count, door)
     api.build_wall_rect("BrickWall", x, y, x2, y2)
     for i = 1, count - 1 do api.build_line("BrickWall", x + i * (cw + 1), y + 1, x + i * (cw + 1), y2 - 1) end
     set_indoors(x, y, x2, y2)
-    local cells = {}
+    local rooms = {}
     for i = 0, count - 1 do
         local cx1 = x + 1 + i * (cw + 1)
-        local items = {}
-        LAYOUTS.cell(cx1, y + 1, cx1 + cw - 1, y2 - 1, items)
-        for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, 1) end
-        door_gap(cx1 + 1, y2)
-        req("PlaceObject", door, cx1 + 1, y2, 0, 1)
-        cells[#cells + 1] = { x1 = cx1, y1 = y + 1, x2 = cx1 + cw - 1, y2 = y2 - 1, door = { x = cx1 + 1, y = y2 } }
+        if furnish then
+            local items = {}
+            furnish(cx1, y + 1, cx1 + cw - 1, y2 - 1, items)
+            for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, 1) end
+        end
+        local dx = cx1 + math.floor((cw - 1) / 2)
+        door_gap(dx, y2)
+        req("PlaceObject", door, dx, y2, 0, 1)
+        rooms[#rooms + 1] = { x1 = cx1, y1 = y + 1, x2 = cx1 + cw - 1, y2 = y2 - 1, door = { x = dx, y = y2 } }
     end
     if NATIVE then
-        for _, c in ipairs(cells) do api.zone("Cell", c.x1, c.y1, c.x2, c.y2) end
+        for _, c in ipairs(rooms) do api.zone(zone, c.x1, c.y1, c.x2, c.y2) end
     end
-    return { queued = true, cells = cells, corridor = { x1 = x, y1 = y2 + 1, x2 = x2, y2 = y2 + 2 }, zoned = NATIVE,
-             next = NATIVE and "Every cell is zoned as Cell. Workmen build it over time (api.progress())." or
-                    "Ask the human to zone each cell as Cell (needs bridge DLL 0.3 to do it yourself)." }
+    return { queued = true, cells = rooms, corridor = { x1 = x, y1 = y2 + 1, x2 = x2, y2 = y2 + 2 }, zoned = NATIVE,
+             next = NATIVE and ("Every room is zoned as " .. zone .. ". Workmen build it over time (api.progress()).") or
+                    ("Ask the human to zone each room as " .. zone .. " (needs bridge DLL 0.3 to do it yourself).") }
+end
+
+function api.cell_block(x, y, count, door)
+    return room_row(x, y, count, 3, 3, door or "JailDoor", "Cell", LAYOUTS.cell, "cell block")
 end
 doc("cell_block", "x, y, count, [door]", "A row of 3x3 cells with beds, toilets and jail doors, opening south onto a corridor.",
     "api.cell_block(20, 10, 6)")
+
+-- Solitary cells: 1x1 inside, enclosed, SolitaryDoor (game requirement: Enclosed).
+-- Misconduct punishments queue up without them (live: 63 waiting, prison temperature 100).
+function api.solitary_block(x, y, count)
+    return room_row(x, y, count, 1, 1, "SolitaryDoor", "Solitary", nil, "solitary block")
+end
+doc("solitary_block", "x, y, count", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor below. " ..
+    "Uses (count*2+1) x 5 cells.", "api.solitary_block(20, 70, 6)")
 
 -- ---- objects and people ------------------------------------------------------
 -- Scripts cannot list objects directly. Object.GetNearbyObjects works from an

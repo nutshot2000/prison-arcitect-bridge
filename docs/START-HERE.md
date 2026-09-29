@@ -50,7 +50,21 @@ status  ->  next  ->  do ONE thing  ->  wait 60  ->  report
 .\prison.ps1 report
 ```
 
-Then hire a Warden, build `room office`, and `research Health` (Doctors) because injuries pile up fast.
+Then, as the prison fills (check `todo` / `report`):
+
+```powershell
+.\prison.ps1 solitary 73 36 6                       # punishments pile up without it -> riot risk (temperature)
+.\prison.ps1 room staffroom 110 10 117 16 south     # needs a sofa AND a DrinkMachine (room places both)
+.\prison.ps1 hire Warden
+.\prison.ps1 room office 120 20 125 25 west
+.\prison.ps1 research Health                        # then: hire Doctor 2, room infirmary ...
+.\prison.ps1 room visitation 74 50 84 58 east       # families visit; calms prisoners
+```
+
+`todo` shows the game's To-do panel as text plus the **prison temperature** (riot risk). In the test prison it was
+100/100 with 63 prisoners waiting for solitary; 6 solitary cells and a visitation room brought it to 46 within a day.
+Out of space? Move the fence out (`fence` with the bigger rectangle) and pave the old fence line
+(`lua "return api.build_line('ConcreteTiles', x, y1, x, y2)"`).
 
 ## Rules learned the hard way (live, 28-29 Sep 2026)
 

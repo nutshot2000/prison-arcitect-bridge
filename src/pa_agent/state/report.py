@@ -221,6 +221,10 @@ def todo(root: Section) -> list[str]:
         t = int(intake.num("IntakeType", -1) or -1)
         out.append(f"Prisoner intake: {INTAKE_MODES.get(t, t)}")
     objs = _objects(root)
+    rooms = Counter(_room_types(root).values())
+
+    def hint(room: str, missing: str, present: str) -> str:
+        return present.format(n=rooms[room]) if rooms.get(room) else missing
     # calibrated against the game's panel (29 Sep 2026): up for parole = served past the parole point
     frac = {"Quarter": 0.25, "Half": 0.5, "ThreeQuarters": 0.75}
     parole = 0
@@ -233,10 +237,12 @@ def todo(root: Section) -> list[str]:
         out.append(f"Prisoners up for parole: {parole}")
     tired = sum(1 for o in objs if o.get("Type") in STAFF and o.num("Energy") is not None and o.num("Energy") < 15)
     if tired:
-        out.append(f"Staff exhausted: {tired} (a Staffroom lets them rest)")
+        out.append(f"Staff exhausted: {tired} " + hint("Staffroom", "(build a Staffroom so they can rest)",
+                                                      "(resting in the staff room; it needs a sofa AND a DrinkMachine)"))
     vis = root.section("Visitation")
     if vis and (vis.num("Waiting", 0) or 0) > 0:
-        out.append(f"Visitors: {int(vis.num('Waiting'))} families waiting to visit (needs a Visitation room)")
+        out.append(f"Visitors: {int(vis.num('Waiting'))} families waiting to visit " +
+                   hint("Visitation", "(build `room visitation`)", "({n} visitation room(s); more tables = more visits)"))
     solitary = lockdown = 0
     msec = root.section("Misconduct")
     reports = msec.section("MisconductReports") if msec else None
@@ -247,7 +253,8 @@ def todo(root: Section) -> list[str]:
         if (rep.num("Punishment_Lockdown", 0) or 0) > 0 and cur == 0:
             lockdown += 1
     if solitary:
-        out.append(f"Incidents: {solitary} awaiting Solitary Confinement (needs a Solitary room)")
+        out.append(f"Incidents: {solitary} awaiting Solitary Confinement " +
+                   hint("Solitary", "(build `solitary x y 6`)", "({n} solitary cells; add more if the queue stays long)"))
     if lockdown:
         out.append(f"Incidents: {lockdown} awaiting Lockdown")
     medical = sum(1 for o in objs if (o.num("Damage", 0) or 0) >= 0.1)  # matches the panel

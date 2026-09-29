@@ -220,6 +220,14 @@ for _, c in ipairs(calls) do
     if c[1] == "Construction" then assert(c[3] < 90 or c[3] > 96, "fence inside the 7-wide gate at " .. c[3]); assert(c[2] == "Fence", "only fence is ordered, got " .. c[2]) end
 end
 r = call("perimeter", 80, 2, 95, 70); assert(not r.ok and string.find(r.error, "along the road"), r.error)
+-- an existing gate is reused, not ordered again
+world_objects[#world_objects + 1] = { Type = "RoadGate", Pos = { x = 93.5, y = 2.5 } }
+calls = {}
+r = call("perimeter", 80, 2, 97, 70); assert(r.ok and string.find(r.result.road_gates[1], "already there"), J.encode(r))
+local newgates = 0
+for _, c in ipairs(calls) do if c[2] == "RoadGate" then newgates = newgates + 1 end end
+assert(newgates == 1, "only the bottom crossing needs a new gate, got " .. newgates)
+table.remove(world_objects)
 
 r = call("build_area", "Building", 1, 1, 2, 2); assert(not r.ok and string.find(r.error, "UI tool"), r.error)
 r = call("build_area", "cancelJobs", 1, 1, 2, 2); assert(not r.ok)
@@ -299,6 +307,18 @@ r = call("intake", "perday", 3); assert(r.ok and r.result.per_day == 3, J.encode
 r = call("intake", "perday"); assert(not r.ok and string.find(r.error, "number"), r.error)
 r = call("intake", "lots"); assert(not r.ok)
 r = call("state"); assert(r.result.intake == "perday", J.encode(r.result))
+calls = {}
+r = call("solitary_block", 10, 60, 3); assert(r.ok and #r.result.cells == 3 and zoned["11,61"], J.encode(r))
+local sd = 0
+for _, c in ipairs(calls) do if c[2] == "SolitaryDoor" then sd = sd + 1; assert(c[4] == 62, "solitary door on the wall row") end end
+assert(sd == 3, "one SolitaryDoor per solitary cell")
+calls = {}
+r = call("furnish", "staffroom", 10, 20, 15, 25); assert(r.ok, r.error)
+local drink = false
+for _, c in ipairs(calls) do if c[2] == "DrinkMachine" then drink = true end end
+assert(drink, "a staff room needs a DrinkMachine (game requirement)")
+r = call("furnish", "staffroom", 10, 20, 12, 22); assert(not r.ok and string.find(r.error, "4x4"), r.error)
+r = call("room", "visitation", 20, 20, 30, 28); assert(r.ok and r.result.room == "Visitation" and #r.result.furniture >= 2, J.encode(r))
 r = call("pause"); assert(r.ok and speed == 0)
 r = call("state"); assert(r.result.paused == true)
 r = call("resume", 2); assert(r.ok and speed == 2)
