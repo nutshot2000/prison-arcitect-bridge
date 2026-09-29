@@ -760,6 +760,8 @@ LAYOUTS.kitchen = function(x1, y1, x2, y2, out)
     x = x1 + 3
     local fridges = 0
     while x + 1 <= x2 and fridges < 2 do put(out, "Fridge", x, y2); x = x + 2; fridges = fridges + 1 end
+    if y2 - y1 >= 3 then put(out, "Bin", x2, y1 + 2) end  -- trash goes out via bins (game: "not disposing of waste")
+    put(out, "Sprinkler", x1, y1 + 1)  -- kitchens start fires; sprinklers cleared "not equipped to handle a fire"
     return "Kitchen: cookers on the top wall, a sink and fridges on the bottom wall. Cookers and fridges need power, " ..
            "the sink needs water (api.hookup). Hire 2+ Cooks. Put a Canteen next to it."
 end
@@ -776,7 +778,9 @@ LAYOUTS.canteen = function(x1, y1, x2, y2, out)
         end
         y = y + 4
     end
-    return "Canteen: a serving table and rows of tables with benches. Zone it as Canteen."
+    put(out, "Bin", x2, y2)
+    put(out, "Sprinkler", x1, y1 + 1)
+    return "Canteen: a serving table, rows of tables with benches, a bin and a sprinkler. Zone it as Canteen."
 end
 
 LAYOUTS.shower = function(x1, y1, x2, y2, out)
@@ -788,6 +792,7 @@ end
 LAYOUTS.yard = function(x1, y1, x2, y2, out)
     for x = x1, math.min(x2, x1 + 6), 2 do put(out, "WeightsBench", x, y1) end
     put(out, "PhoneBooth", x2, y2)
+    if x2 - 1 >= x1 then put(out, "Bin", x2 - 1, y2) end
     return "Yard: weights benches and a phone booth. Zone it as Yard (it can be outdoors)."
 end
 
@@ -818,6 +823,7 @@ LAYOUTS.dormitory = function(x1, y1, x2, y2, out)
         for x = x1, tx - 2, 2 do put(out, "Bed", x, y) end
         y = y + 3
     end
+    if tx - 1 > x1 then put(out, "Bin", tx - 1, y1) end
     return "Dormitory: rows of beds and toilets on the right wall. Zone as Dormitory. Toilets need water (hookup)."
 end
 
@@ -1074,7 +1080,7 @@ doc("progress", "", "What you ordered that is finished vs still pending.", "api.
 local NEEDS = {
     power = { "WaterPumpStation", "Capacitor", "Cooker", "Fridge", "Tv", "LargeTv", "Light", "LaundryMachine", "Cctv", "CctvMonitor",
               "DoorControlSystem", "MetalDetector", "WorkshopSaw", "WorkshopPress", "ArcadeCabinet", "PhoneMonitor" },
-    water = { "Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine" },
+    water = { "Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine", "Sprinkler" },
 }
 -- Only real sources seed the network. A Capacitor is NOT a source: it must itself be
 -- cabled to the station (live bug: the pump was wired to an unconnected capacitor).
