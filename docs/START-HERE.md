@@ -91,6 +91,12 @@ Out of space? Move the fence out (`fence` with the bigger rectangle) and pave th
 8. **Everything is built by workmen.** Nothing moves while paused, and injured workmen are slow. If `progress` stalls,
    `resume`, check money, and look at `report` for injured staff.
 9. **A kitchen needs cookers, fridges AND a sink**, plus power, water and 2+ Cooks. `room kitchen` places all of it.
+   One `room kitchen` (3 cookers + 2 fridges) draws exactly 50: **give every kitchen its own power station**.
+10. **Scale with the prison** (measured at 82 prisoners): about 1 cooker + 1 cook per 10 prisoners, 1 shower head per
+    10-12 (3 heads for 82 left Hygiene at 99; a 15x6 shower room adds 7), 1 guard per 6.
+11. **The game's To-do items and their fixes** (`todo`): "not efficiently disposing of waste" → Bins (rooms place
+    them now); "not equipped to handle a fire" → Sprinklers on water (kitchens/canteens get one); "staff exhausted" →
+    a Staffroom WITH a DrinkMachine; long Solitary queue → `solitary`; families waiting → `room visitation`.
 
 ## When something fails
 

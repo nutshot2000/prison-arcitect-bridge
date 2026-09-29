@@ -139,3 +139,13 @@ road at x 139-143. Played for 9 game days through the bridge (CLI `pa-agent play
 - `todo` rebuilds the game's To-do panel from the save; checked line by line against the in-game panel (intake,
   parole 29, visitors 65, solitary 63, lockdown 1, injured 6, exhausted 1). Adds the prison temperature (riot risk).
 - utilmap water layer drew no pipes (PipeType is text in the save); fixed, with a test.
+
+## Follow-up 2 — 29 September 2026: growing the prison with the easy verbs
+
+Day 12 → 17, 59 → 82 prisoners, all through `pa-agent play`. Built live: 6 solitary cells, visitation room, staff
+room DrinkMachine, bins, sprinklers, fence moved west (old line paved), third dormitory, second kitchen on its own
+station, third canteen, 7-head shower block. Results: prison temperature 100 → 0, solitary queue 63 → 1, 82 beds for 82
+prisoners, holding cell empty, profit $16.9k/day, 0 escapes. The game's To-do panel lost the waste, fire and staff
+exhaustion items. A standard kitchen (3 cookers + 2 fridges) measured exactly 50/50 on its own station.
+Fixed along the way: fence re-run no longer orders a second RoadGate (two had been installed; dismantled);
+`todo` hints follow the rooms that exist.
