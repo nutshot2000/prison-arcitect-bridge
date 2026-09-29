@@ -130,3 +130,12 @@ road at x 139-143. Played for 9 game days through the bridge (CLI `pa-agent play
 - Camera control and the regime are not available.
 - The first test prison had 41 escapes and 6 deaths before intake/fence/beds were fixed; the build order in
   `docs/START-HERE.md` avoids that.
+
+## Follow-up — 29 September 2026 (after restarting Claude Desktop and the game)
+
+- New MCP server: pa_connection, pa_intake, pa_report, pa_next and pa_screenshot (image returned inline) all worked.
+- `intake beds` survived a game restart (it is stored in the save) and held over a day change: day 12 10:40 →
+  day 14 00:05 at speed 5 (including the 08:00 intake), prisoners 65 → 60 with 58 beds, no new arrivals.
+- `todo` rebuilds the game's To-do panel from the save; checked line by line against the in-game panel (intake,
+  parole 29, visitors 65, solitary 63, lockdown 1, injured 6, exhausted 1). Adds the prison temperature (riot risk).
+- utilmap water layer drew no pipes (PipeType is text in the save); fixed, with a test.
