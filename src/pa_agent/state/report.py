@@ -151,6 +151,8 @@ def situation(root: Section) -> dict[str, Any]:
         "today": today, "total": total, "misconduct": dict(mis.most_common(8)),
         "rooms_failing": failing,
         "balance": root.num("Balance"),
+        "temperature": (root.section("Thermometer").num("Temperature") if root.section("Thermometer") else None),
+        "todo": todo(root),
     }
 
 
@@ -182,6 +184,8 @@ def situation_text(s: dict[str, Any]) -> str:
         lines.append(f"MISCONDUCT {fmt(s['misconduct'])}")
     if s["rooms_failing"]:
         lines.append(f"ROOMS MISSING SOMETHING: {', '.join(s['rooms_failing'])}")
+    if s.get("todo"):
+        lines.append("GAME TO-DO: " + " | ".join(s["todo"]))
     # plain-language diagnosis
     advice = []
     if any(not p["powered"] for p in s["pumps"]) or not s["pumps"]:
@@ -193,12 +197,69 @@ def situation_text(s: dict[str, Any]) -> str:
         advice.append("Many prisoners are outside rooms: build a perimeter `fence`, more cells, more guards.")
     if s["staff_down"]:
         advice.append("Staff are down: hire more guards and a Doctor (Health research) before more intake.")
+    temp = s.get("temperature")
+    if temp is not None and temp >= 80:
+        advice.append(f"Prison temperature {temp:.0f}/100 = riot risk: more guards, fix the worst needs, "
+                      "a Solitary room for the punishment queue.")
     for need, _ in s["worst_needs"][:2]:
         if need in NEED_FIX:
             advice.append(f"{need} is the worst need: {NEED_FIX[need]}.")
     if advice:
         lines.append("DO NEXT: " + " ".join(advice))
     return "\n".join(lines)
+
+
+INTAKE_MODES = {0: "none", 1: "fill to capacity (beds)", 2: "up to a maximum total", 3: "a number per day",
+                4: "all available"}
+
+
+def todo(root: Section) -> list[str]:
+    """The game's To-do panel, rebuilt from the save (the panel itself is not readable by scripts)."""
+    out: list[str] = []
+    intake = root.section("Intake")
+    if intake:
+        t = int(intake.num("IntakeType", -1) or -1)
+        out.append(f"Prisoner intake: {INTAKE_MODES.get(t, t)}")
+    objs = _objects(root)
+    # calibrated against the game's panel (29 Sep 2026): up for parole = served past the parole point
+    frac = {"Quarter": 0.25, "Half": 0.5, "ThreeQuarters": 0.75}
+    parole = 0
+    for o in objs:
+        bio = o.section("Bio") if o.get("Type") == "Prisoner" else None
+        if bio and str(bio.get("NextParole", "")) in frac:
+            if (bio.num("Served", 0) or 0) >= frac[str(bio.get("NextParole"))] * (bio.num("SentenceF", 0) or 0):
+                parole += 1
+    if parole:
+        out.append(f"Prisoners up for parole: {parole}")
+    tired = sum(1 for o in objs if o.get("Type") in STAFF and o.num("Energy") is not None and o.num("Energy") < 15)
+    if tired:
+        out.append(f"Staff exhausted: {tired} (a Staffroom lets them rest)")
+    vis = root.section("Visitation")
+    if vis and (vis.num("Waiting", 0) or 0) > 0:
+        out.append(f"Visitors: {int(vis.num('Waiting'))} families waiting to visit (needs a Visitation room)")
+    solitary = lockdown = 0
+    msec = root.section("Misconduct")
+    reports = msec.section("MisconductReports") if msec else None
+    for rep in reports.sections() if reports else []:
+        cur = int(rep.num("CurrentPunishment", 0) or 0)
+        if (rep.num("Punishment_Solitary", 0) or 0) > 0 and cur == 0:
+            solitary += 1
+        if (rep.num("Punishment_Lockdown", 0) or 0) > 0 and cur == 0:
+            lockdown += 1
+    if solitary:
+        out.append(f"Incidents: {solitary} awaiting Solitary Confinement (needs a Solitary room)")
+    if lockdown:
+        out.append(f"Incidents: {lockdown} awaiting Lockdown")
+    medical = sum(1 for o in objs if (o.num("Damage", 0) or 0) >= 0.1)  # matches the panel
+    if medical:
+        out.append(f"Medical: {medical} people injured (Doctors + infirmary treat them)")
+    th = root.section("Thermometer")
+    if th:
+        temp = th.num("Temperature", 0) or 0
+        level = "RIOT RISK" if temp >= 80 else "tense" if temp >= 50 else "calm"
+        out.append(f"Prison temperature {temp:.0f}/100 ({level}): {int(th.num('UnhappyPrisoners', 0) or 0)} unhappy, "
+                   f"{int(th.num('LockedUpPrisoners', 0) or 0)} locked up")
+    return out
 
 
 def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "both") -> str:

@@ -109,6 +109,8 @@ class Server:
              "(recommended; set it first). none, max (n = total), perday (n a day), all (floods the prison). "
              "No mode: show the current one.",
              {"mode": {"type": "string", "enum": ["beds", "none", "max", "perday", "all"]}, "n": INT}, [], ["mode", "n"])
+        verb("pa_todo", "todo", "The game's To-do panel as text: intake mode, parole, visitors waiting, solitary queue, "
+             "injured people, prison temperature (riot risk).", {}, [], [])
         verb("pa_zone", "zone", "Zone a rectangle as a room type (use the room's INSIDE). pa_room already zones.",
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",

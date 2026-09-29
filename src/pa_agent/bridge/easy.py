@@ -101,6 +101,7 @@ VERB_HELP = {
     "report": ("report",
                "What is going on inside: where prisoners are, what they complain about, injured/down staff,\n"
                "  power stations and pump, escapes/deaths/fights today, and what to fix first."),
+    "todo": ("todo", "The game's To-do panel as text: intake, parole, visitors, solitary queue, injured, prison temperature."),
     "utilmap": ("utilmap [power|water|both] [x1 y1 x2 y2]",
                 "Map of cables, pipes, stations and which objects have power/water (like the game's utilities view)."),
     "switch": ("switch <x> <y> <on|off>", "Turn a PowerSwitch on or off (it splits the power grid)."),
@@ -283,6 +284,11 @@ class Easy:
     def v_report(self) -> str:
         from ..state.report import situation, situation_text
         return situation_text(situation(self.snapshot()))
+
+    def v_todo(self) -> str:
+        from ..state.report import todo
+        items = todo(self.snapshot())
+        return "\n".join(f"- {i}" for i in items) if items else "nothing on the game's to-do list"
 
     def v_utilmap(self, kind: str = "both", *xy: str) -> str:
         from ..state.report import built_area, utility_map
