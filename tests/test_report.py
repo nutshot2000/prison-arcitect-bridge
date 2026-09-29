@@ -78,6 +78,9 @@ class ReportTests(unittest.TestCase):
         self.assertIn("P", m)
         self.assertIn("p", m)
         self.assertIn("W", m)
+        # water layer: the small pipe at 1,1 must be drawn (PipeType is text in the save)
+        wm = utility_map(self.root, 0, 0, 10, 10, "water").splitlines()
+        self.assertEqual(wm[3][5 + 1], "s")
 
 
 if __name__ == "__main__":

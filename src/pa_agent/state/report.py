@@ -223,8 +223,8 @@ def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "
             x, y = (int(v) for v in c.name.split()[:2])
         except ValueError:
             continue
-        pt = c.get("PipeType")
-        if isinstance(pt, (int, float)):
+        pt = c.num("PipeType")  # get() returns the save's text ("1"); num() converts
+        if pt is not None:
             pipes[(x, y)] = int(pt)
     grid: dict[tuple[int, int], str] = {}
     for (x, y), c in cells.items():
