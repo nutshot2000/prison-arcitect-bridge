@@ -440,6 +440,8 @@ r = call("room", "office", 58, 58, 63, 63); assert(not r.ok and string.find(r.er
 r = call("room", "yard", 57, 57, 66, 66); assert(not r.ok and string.find(r.error, "remove fence"), J.encode(r))
 built["55,60"] = "ConcreteTiles"  -- a gap in the fence
 r = call("room", "office", 58, 58, 63, 63); assert(r.ok, J.encode(r))
+-- a second room over the first one's orders is refused (live: an office wrecked a solitary block)
+r = call("room", "office", 60, 60, 66, 66); assert(not r.ok and string.find(r.error, "overlaps"), J.encode(r))
 World.Balance = 100
 ---------------------------------------------------------------------------
 -- capacity-aware, island-aware, non-cross-wiring power hookup (fresh script, controlled world)

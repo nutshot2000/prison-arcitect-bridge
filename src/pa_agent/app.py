@@ -145,9 +145,13 @@ def main(argv=None) -> int:
             src = (Path(__file__).resolve().parents[2] / "mod" / "ai_bridge" / "data" / "world.lua").read_text(encoding="utf-8")
             if "]====]" in src:
                 raise ValueError("world.lua contains ]====], cannot embed it")
+            # Re-register the new pump with the DLL: while the game is paused, requests run through the
+            # pump registered at hello, so without this the OLD code kept answering (live 30 Sep 2026).
             code = ("local G = getfenv(Update)\n"
                     f"local f = assert(loadstring([====[{src}]====], 'world.lua'))\n"
-                    "setfenv(f, G); f(); return G.PA_BRIDGE.VERSION")
+                    "setfenv(f, G); f()\n"
+                    "G.PA_BRIDGE.hello()\n"
+                    "return G.PA_BRIDGE.VERSION")
             client = BridgeClient(timeout=20)
             result = {"reloaded": client.exec(code)}
             result["state"] = client.call("state")

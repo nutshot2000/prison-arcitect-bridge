@@ -203,3 +203,27 @@ Fixed along the way: fence re-run no longer orders a second RoadGate (two had be
 - DO NOT write `World.GetCell(x, y).Mat` from Lua: it reads back as written, but the game crashed within a minute
   after 69 fence cells were changed this way. Recovery: the same change made offline in a copy of the autosave
   (`agent_fixed.prison`: old fence cells at x=62 → ConcreteTiles).
+
+## Follow-up 6 — 30 September 2026: DLL 0.5 (emergencies, grants), tunnels, research
+
+- Emergencies: the Emergencies buttons dispatch through one switch (0x1401f7b44). Contraband manager =
+  world+0x21a0; start(c, tunnel, drugs) 0x1405021f0, stop 0x140503ec0, announce 0x140502130; Bangup
+  0x1407c7c30(world) (flag world+0x5dc = regime Bangup), Lockdown 0x1407c77e0(world) (world+0x4612).
+  `emergency tunnelsearch` ran live (state went active, then finished).
+- Tunnels (save section `Tunnels`: Dug/Entrance/Discovered): 3 tunnels from toilets in a dormitory and the cell
+  block to outside the fence explained 9-12 escapes a day. The tunnel search and SearchObject jobs on the toilets
+  only marked the exit holes outside as discovered; the inside entrances stayed hidden. `report` now counts a tunnel
+  as found only when its inside entrance is. Dogs (Security → Patrols → Dogs) are the next thing to try.
+- Grants: world+0xd90 is the Grants object (catalogue +0x30, state records +0x40: state 0 available, 1 accepted,
+  2 completed). AcceptGrant 0x1405cdd20(grants, &name, 1, &emptylist) after the UI's lock check 0x1405cdbc0.
+  Live: bootstraps +$30,000 (completed at once, the To-do "Accept your first Grant" cleared), Health, Visitation,
+  Administration, Maintenance accepted; two more refused by the game's limit on grants running at once.
+  `Objective.CreateGrant` from mod Lua does nothing visible (the catalogue already holds the grant).
+- CEO letter: the letter window removes objective ReadCeosLetter with 0x1406717f0(world+0xc88, &name, 0) and sets
+  world+0x46dc; `Objective.Complete('ReadCeosLetter')` did not clear it. DLL 0.5.1 `read_letter` (not tried live yet).
+- Research: Maintainance, Cleaning, PrisonLabour, MentalHealth, Security, Finance done; Foreman, Chief, Accountant,
+  Psychologist, 3 Janitors hired, 5 offices (one per department head).
+- Mistakes fixed: an office ordered over the new solitary block replaced its dividers/doors (three times, twice
+  because of the next bug); `room`/`building`/`cells`/`solitary` now refuse rectangles over zoned rooms or ordered
+  work. `reload-mod` left the OLD code answering while the game was paused (the DLL runs the pump registered at
+  hello); it now calls the new chunk's `hello()`, and a paused reload was verified to refuse the overlap.

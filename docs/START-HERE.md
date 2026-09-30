@@ -136,7 +136,14 @@ chief accountant psychologist cctv patrols metaldetector grants logistics, or an
   room that answers them: Spirituality → `room chapel`, Recreation → `room commonroom`, Clothing → laundry,
   parole → `room parole`, families → `room visitation`, Alcohol/Drugs → only less smuggling (`unlock metaldetector`).
 
+## Grants, emergencies, tunnels (bridge DLL 0.5)
+
+- `grants` lists every grant with its money and status; `grant bootstraps` accepts one (advance paid at once).
+  Start with bootstraps, Administration, Health. The game allows only a few running at once.
+- `emergency tunnelsearch|shakedown|drugbust|stop|bangup|lockdown` presses the Emergencies buttons.
+- `report` lists TUNNEL entrances. Escapes with a secure fence = tunnels: search, and get Dogs.
+
 ## Not available yet
 
-Grants/objectives (not readable by scripts yet) and per-group regimes. `lua <code>` runs raw Lua for anything else
+Per-group regimes, Guard Response / Roll Call buttons. `lua <code>` runs raw Lua for anything else
 (see `api.help()`).

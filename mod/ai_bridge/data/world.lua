@@ -10,7 +10,7 @@
 --
 -- Without the DLL this script does nothing.
 
-local VERSION = "0.4.0"
+local VERSION = "0.5.1"
 local MAX_REQUESTS_PER_TICK = 64
 local DebugOut = Game.DebugOut  -- patched by the DLL; native actions go through it
 local NATIVE = false            -- DLL 0.3+ with verified game functions (zone/save/speed/research)
@@ -667,6 +667,25 @@ local function check_reachable(x1, y1, x2, y2, what)
           "until it is gone, then order this again. (Ordered now it stalls every workman.)", 0)
 end
 
+-- The rectangle must not overlap a room (zoned) or work already ordered. Live (30 Sep 2026): an office
+-- ordered over a new solitary block replaced its dividers and doors (later orders win).
+local function check_clear(x1, y1, x2, y2, what)
+    for x = x1, x2 do
+        for y = y1, y2 do
+            local ok, i = pcall(function() return World.GetCell(x, y).Room.i end)
+            if ok and tonumber(i) and tonumber(i) >= 0 then
+                error(what .. " at " .. x1 .. "," .. y1 .. "-" .. x2 .. "," .. y2 .. " overlaps an existing room at " ..
+                      x .. "," .. y .. ". Pick empty ground (`space w h`) or `unzone` it first.", 0)
+            end
+            local p = planned_at(x, y)
+            if p and p ~= Object.GetMaterial(x, y) then
+                error(what .. " at " .. x1 .. "," .. y1 .. "-" .. x2 .. "," .. y2 .. " overlaps work already ordered (" ..
+                      p .. " at " .. x .. "," .. y .. "). Pick empty ground (`space w h`).", 0)
+            end
+        end
+    end
+end
+
 -- The door cell must not get a wall: a wall order there was built over the
 -- finished door (live: kitchen and shower doors turned into BrickWall). A later
 -- order for the same cell replaces the wall order, so order floor there instead.
@@ -679,6 +698,7 @@ function api.building(x1, y1, x2, y2, door_side, door, wall, floor)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "building")
     if x2 - x1 < 2 or y2 - y1 < 2 then error("a building needs at least 3 x 3 cells including walls", 0) end
     check_reachable(x1, y1, x2, y2, "building")
+    check_clear(x1, y1, x2, y2, "building")
     door_side = door_side and string.lower(door_side) or "south"
     if not SIDES[door_side] then error("door_side must be north, south, east or west", 0) end
     wall = wall or "BrickWall"
@@ -1065,6 +1085,7 @@ function api.room(kind, x1, y1, x2, y2, door_side)
     if OUTDOOR[kind] then
         inside = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
         check_reachable(x1, y1, x2, y2, kind)
+        check_clear(x1, y1, x2, y2, kind)
         if kind ~= "yard" then api.build_area("ConcreteFloor", x1, y1, x2, y2) end
         built = "outdoor area (no walls)"
     else
@@ -1093,6 +1114,7 @@ local function room_row(x, y, count, cw, ch, door, zone, furnish, what)
     local y2 = y + ch + 1
     rect(x, y, x2, y2 + 2, what .. " (with its 2-cell corridor)")
     check_reachable(x, y, x2, y2 + 2, what)
+    check_clear(x, y, x2, y2 + 2, what)
     -- floors first: a later order for the same cell replaces an earlier one, so the
     -- dividing walls must be ordered after the floor (live bug: cells had no dividers)
     api.build_area("ConcreteFloor", x + 1, y + 1, x2 - 1, y2 - 1)
@@ -2349,15 +2371,20 @@ local function pump()
     end
 end
 
+-- Say hello to the DLL and hand it our pump (it runs the pump while the game is paused). Also called
+-- by `pa-agent reload-mod` so reloaded code answers at once, paused or not.
+local function hello()
+    local r = DebugOut("\1hello:" .. VERSION, pump)
+    bridged = (type(r) == "string")
+    NATIVE = bridged and string.find(r, " native", 1, true) ~= nil
+    return r
+end
+
 function Update(timePassed)
-    if bridged == nil then
-        local r = DebugOut("\1hello:" .. VERSION, pump)
-        bridged = (type(r) == "string")
-        NATIVE = bridged and string.find(r, " native", 1, true) ~= nil
-    end
+    if bridged == nil then hello() end
     if not bridged then return end
     pump()
 end
 
 -- exposed for tests
-PA_BRIDGE = { json = json, api = api, handle = handle, VERSION = VERSION, pump = pump }
+PA_BRIDGE = { json = json, api = api, handle = handle, VERSION = VERSION, pump = pump, hello = hello }
