@@ -268,7 +268,7 @@ Game.DebugOut = function(s, fn)
     if s == "poll" then return table.remove(inbox, 1) end
     if string.sub(s, 1, 6) == "hello:" then pump_fn = fn; return "pa_bridge 0.3.0 native" end
     if string.sub(s, 1, 6) == "reply:" then outbox[#outbox + 1] = string.sub(s, 7); return end
-    if s == "roomtypes" then return "None,Cell,HoldingCell,Kitchen,Canteen,Shower,Yard,Office,MedicalWard,Deliveries,Garbage" end
+    if s == "roomtypes" then return "None,Cell,HoldingCell,Kitchen,Canteen,Shower,Yard,Office,MedicalWard,Deliveries,Garbage,Chapel,CommonRoom,ParoleRoom,Laundry,Classroom,Workshop,Library,CleaningCupboard,Visitation" end
     local t, a, b, c, d = string.match(s, "^zone:(%S+) (%-?%d+) (%-?%d+) (%-?%d+) (%-?%d+)$")
     if t then
         for x = tonumber(a), tonumber(c) do for y = tonumber(b), tonumber(d) do zoned[x .. "," .. y] = t ~= "None" or nil end end
@@ -367,6 +367,38 @@ r = call("research", "Cleaning"); assert(not r.ok and string.find(r.error, "Main
 r = call("research"); assert(r.ok and #r.result.research > 20, J.encode(r))
 research.Health = 100
 r = call("hire", "doctor", 2); assert(r.ok and r.result.hired == 2 and r.result.type == "Doctor", J.encode(r))
+-- unlock planner: laundry = Maintainance (Warden) -> hire Foreman -> PrisonLabour -> build
+r = call("unlock", "laundry"); assert(r.ok, r.error)
+local st = {}
+for _, x in ipairs(r.result.steps) do st[#st + 1] = x.step end
+local joined = table.concat(st, " | ")
+assert(string.find(joined, "research Maintainance") and string.find(joined, "hire Foreman") and
+       string.find(joined, "research PrisonLabour") and string.find(joined, "room laundry"), joined)
+assert(joined:find("research Maintainance") < joined:find("hire Foreman") and
+       joined:find("hire Foreman") < joined:find("research PrisonLabour"), joined)
+assert(not r.result.done)
+r = call("unlock", "Doctor"); assert(r.ok and r.result.done, J.encode(r))  -- Health is done
+r = call("unlock", "nonsense"); assert(not r.ok and string.find(r.error, "api.unlock"), r.error)
+-- rooms gated by research
+r = call("room", "laundry", 70, 40, 76, 45); assert(not r.ok and string.find(r.error, "PrisonLabour"), r.error)
+research.Maintainance = 100; research.PrisonLabour = 100
+r = call("unlock", "laundry"); assert(r.ok and r.result.done, J.encode(r))
+calls = {}
+r = call("room", "laundry", 70, 40, 76, 45); assert(r.ok and r.result.room == "Laundry", J.encode(r))
+local lm = 0
+for _, c in ipairs(calls) do if c[2] == "LaundryMachine" then lm = lm + 1 end end
+assert(lm >= 2, "laundry machines placed")
+-- chapel: 6x6 inside minimum; altar sits inside the top wall
+r = call("room", "chapel", 80, 40, 85, 45); assert(not r.ok and string.find(r.error, "6x6"), r.error)
+calls = {}
+r = call("room", "chapel", 80, 50, 89, 59); assert(r.ok and r.result.room == "Chapel", J.encode(r))
+for _, c in ipairs(calls) do
+    if c[1] == "PlaceObject" and c[2] == "Altar" then assert(c[4] == 52, "altar (h 2) anchored one below the top row") end
+    if c[1] == "PlaceObject" and c[2] == "Pews" then assert(c[4] < 59 and c[3] + 3 <= 88, "pews inside") end
+end
+r = call("room", "commonroom", 70, 50, 79, 57); assert(r.ok and r.result.room == "CommonRoom", J.encode(r))
+r = call("room", "parole", 70, 60, 76, 66); assert(r.ok and r.result.room == "ParoleRoom", J.encode(r))
+r = call("room", "classroom", 80, 62, 88, 70); assert(not r.ok and string.find(r.error, "Education"), r.error)
 World.Balance = 100
 r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
 ---------------------------------------------------------------------------

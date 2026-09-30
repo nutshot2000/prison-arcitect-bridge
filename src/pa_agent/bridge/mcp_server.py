@@ -80,8 +80,10 @@ class Server:
              ["width", "height", "near_x", "near_y"])
         verb("pa_room", "room", "Build a whole room in one call: walls + floor + door + furniture + zone. The rectangle "
              "INCLUDES the walls. kind: holding, cell, kitchen, canteen, shower, yard, office, staffroom, infirmary, "
-             "dormitory, visitation, storage, deliveries, garbage. door_side: north/south/east/west. Good sizes: holding 9x8, kitchen 9x8, "
-             "canteen 12x10, shower 7x6, yard 16x12 (outdoor), office 6x6.",
+             "dormitory, visitation, storage, deliveries, garbage, chapel, commonroom, parole, laundry, classroom, workshop, "
+             "library, cleaning (the last five need research: pa_unlock). door_side: north/south/east/west. Good sizes: "
+             "holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12 (outdoor), office 6x6, chapel 10x10, "
+             "commonroom 10x8, parole 7x7, laundry 8x6.",
              {"kind": STR, **RECT, "door_side": STR}, ["kind", *RECT], ["kind", *RECT, "door_side"])
         verb("pa_cells", "cells", "A row of 3x3 prison cells (bed, toilet, jail door, zoned Cell) with a corridor below. "
              "Uses (count*4+1) x 7 cells from x,y.", {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"],
@@ -109,8 +111,12 @@ class Server:
              "(recommended; set it first). none, max (n = total), perday (n a day), all (floods the prison). "
              "No mode: show the current one.",
              {"mode": {"type": "string", "enum": ["beds", "none", "max", "perday", "all"]}, "n": INT}, [], ["mode", "n"])
-        verb("pa_todo", "todo", "The game's To-do panel as text: intake mode, parole, visitors waiting, solitary queue, "
-             "injured people, prison temperature (riot risk).", {}, [], [])
+        verb("pa_todo", "todo", "The game's To-do panel as text (intake mode, parole, visitors waiting, solitary queue, "
+             "injured people, prison temperature) with a `do:` command for each item, plus the worst prisoner needs.",
+             {}, [], [])
+        verb("pa_unlock", "unlock", "How to unlock something locked (Janitor, laundry, workshop, Doctor, Chief, cctv, "
+             "grants...): the research chain and the steps still to do in order (research, hire the department head, "
+             "their Office, then build/hire). Empty target lists the things.", {"target": STR}, [], ["target"])
         verb("pa_solitary", "solitary", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor "
              "below, (count*2+1) x 5 cells. Needed for punishments; without it the riot risk climbs.",
              {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"], ["x", "y", "count"])

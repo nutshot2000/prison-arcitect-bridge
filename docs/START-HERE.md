@@ -59,6 +59,10 @@ Then, as the prison fills (check `todo` / `report`):
 .\prison.ps1 room office 120 20 125 25 west
 .\prison.ps1 research Health                        # then: hire Doctor 2, room infirmary ...
 .\prison.ps1 room visitation 74 50 84 58 east       # families visit; calms prisoners
+.\prison.ps1 room parole 83 10 89 16                # prisoners up for parole get their hearing here
+.\prison.ps1 room chapel 44 10 53 19                # Spirituality (Altar + Pews + PrayerMat, 8x8+)
+.\prison.ps1 room commonroom 44 22 53 29            # Recreation (TV, pool table, phone); hookup power
+.\prison.ps1 unlock laundry                         # research steps for laundry / janitors / workshop
 ```
 
 `todo` shows the game's To-do panel as text plus the **prison temperature** (riot risk). In the test prison it was
@@ -117,7 +121,21 @@ Out of space? Move the fence out (`fence` with the bigger rectangle) and pave th
 | `PowerStation ... is OFF (tripped)` | Too much on one grid or two stations touching; see rule 3. |
 | `NOTHING WAS ZONED` | The cells are walls or unfinished foundation; wait for the floor, zone again. |
 
+## Unlocking things (research) and the To-do list
+
+Most staff and rooms are locked behind research. `unlock <thing>` prints what is still missing, in order, e.g.
+`unlock laundry`: `research Maintainance` (the Warden) → `hire Foreman` + `room office` for him → `research
+PrisonLabour` (the Foreman) → `room laundry`. Things: janitor laundry workshop library classroom doctor foreman
+chief accountant psychologist cctv patrols metaldetector grants logistics, or any research name.
+
+- Every department head (Warden, Foreman, Chief, Accountant, Lawyer, Psychologist) needs **their own Office**.
+- Departments research in parallel, one item each; `next` suggests the next item per free head
+  (Health → Maintainance → Security → Cleaning → PrisonLabour → Contraband → Patrols → ...).
+- `todo` lists the game's To-do panel with a `do:` command under each item, then the worst prisoner needs and the
+  room that answers them: Spirituality → `room chapel`, Recreation → `room commonroom`, Clothing → laundry,
+  parole → `room parole`, families → `room visitation`, Alcohol/Drugs → only less smuggling (`unlock metaldetector`).
+
 ## Not available yet
 
-Camera control, the daily regime, and changing the prisoner intake from the bridge (do it in Reports > Intake).
-`lua <code>` runs raw Lua for anything else (see `api.help()`).
+Grants/objectives (not readable by scripts yet) and per-group regimes. `lua <code>` runs raw Lua for anything else
+(see `api.help()`).

@@ -56,7 +56,27 @@ def _counts(d: dict | None) -> str:
 
 
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock"}
+
+# Research worth doing, in order (each line: research, why). Departments work in parallel: the Warden,
+# the Foreman (Maintainance) and the Chief (Security) each research one thing at a time.
+RESEARCH_LADDER = [
+    ("Health", "Doctors treat the injured"),
+    ("Maintainance", "a Foreman, who researches Cleaning and PrisonLabour"),
+    ("Security", "a Chief, who researches patrols and contraband control"),
+    ("Cleaning", "Janitors (clean + run the laundry)"),
+    ("PrisonLabour", "laundry (Clothing need), workshop (money), library"),
+    ("Contraband", "metal detectors / searches (Drugs, Alcohol, weapons)"),
+    ("Patrols", "guard patrols"),
+    ("Deployment", "guard deployment"),
+    ("Education", "classes (reduce reoffending, grant money)"),
+    ("Finance", "an Accountant: grants and bank loans"),
+    ("MentalHealth", "a Psychologist"),
+    ("AdvancedManagement", "food/laundry logistics"),
+    ("Policy", "the policy tab"),
+]
+DEPARTMENT_HEAD = {"Maintainance": "Foreman", "Security": "Chief", "Finance": "Accountant", "Legal": "Lawyer",
+                   "MentalHealth": "Psychologist"}
 
 VERB_HELP = {
     "status": ("status", "Money, clock, paused?, prisoners, beds, staff, rooms you made, construction progress."),
@@ -67,9 +87,11 @@ VERB_HELP = {
     "room": ("room <kind> <x1> <y1> <x2> <y2> [door_side]",
              "Build a whole room: walls + floor + door + furniture + zone. The rectangle INCLUDES the walls.\n"
              "  kinds: holding kitchen canteen shower yard office staffroom infirmary dormitory visitation storage\n"
-             "         deliveries garbage\n"
+             "         deliveries garbage chapel commonroom parole laundry classroom workshop library cleaning\n"
+             "  (laundry/workshop/library need PrisonLabour, classroom Education, cleaning Cleaning: `unlock <kind>`)\n"
              "  door_side: north south east west (default south). Yards/deliveries/garbage have no walls.\n"
-             "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6."),
+             "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6,\n"
+             "  chapel 8x8+, commonroom 10x8, parole 7x7, laundry 8x6, classroom 9x9, workshop 9x7, library 9x7."),
     "cells": ("cells <x> <y> <count>",
               "A row of 3x3 cells (bed, toilet, jail door, zoned as Cell) with a 2-cell corridor below.\n"
               "  Takes (count*4+1) x 7 cells starting at x,y."),
@@ -108,7 +130,8 @@ VERB_HELP = {
     "report": ("report",
                "What is going on inside: where prisoners are, what they complain about, injured/down staff,\n"
                "  power stations and pump, escapes/deaths/fights today, and what to fix first."),
-    "todo": ("todo", "The game's To-do panel as text: intake, parole, visitors, solitary queue, injured, prison temperature."),
+    "todo": ("todo", "The game's To-do panel as text (intake, parole, visitors, solitary queue, injured, prison\n"
+                     "  temperature) with the command that clears each item, plus the worst prisoner needs."),
     "utilmap": ("utilmap [power|water|both] [x1 y1 x2 y2]",
                 "Map of cables, pipes, stations and which objects have power/water (like the game's utilities view)."),
     "switch": ("switch <x> <y> <on|off>", "Turn a PowerSwitch on or off (it splits the power grid)."),
@@ -125,6 +148,11 @@ VERB_HELP = {
     "view": ("view <x1> <y1> <x2> <y2> [scale]", "Move the player's camera to that rectangle and take a screenshot."),
     "remove": ("remove <Object> <x> <y> | remove cable|pipe|wall <x1> <y1> <x2> <y2>",
                "Dismantle an object, delete cable/pipe cells at once, or knock walls down (they become floor)."),
+    "unlock": ("unlock <thing>",
+               "How to get something that is locked: the steps still to do, in order (research, hire the department\n"
+               "  head, give them an Office, then build/hire). Things: janitor laundry workshop library classroom\n"
+               "  doctor foreman chief accountant psychologist cctv patrols metaldetector grants logistics, or a\n"
+               "  research name. `unlock` alone lists them."),
     "lua": ("lua <code>", "Experts: run Lua in the game (`return` a value)."),
 }
 
@@ -309,9 +337,48 @@ class Easy:
         return situation_text(situation(self.snapshot()))
 
     def v_todo(self) -> str:
-        from ..state.report import todo
-        items = todo(self.snapshot())
-        return "\n".join(f"- {i}" for i in items) if items else "nothing on the game's to-do list"
+        from ..state.report import NEED_FIX, situation, todo, todo_action
+        root = self.snapshot()
+        items = todo(root)
+        have: dict[str, int] = {}
+        for r in self._rooms_from(root):
+            have[r["type"]] = have.get(r["type"], 0) + 1
+        lines = []
+        for i in items:
+            act = todo_action(i, have)
+            lines.append(f"- {i}" + (f"\n    do: {act}" if act else ""))
+        sit = situation(root)
+        needs = [(k, v) for k, v in sit.get("worst_needs", []) if v >= 50 and k in NEED_FIX]
+        if needs:
+            lines.append("Prisoner needs (0-100, high = bad):")
+            lines += [f"- {k} {v}\n    do: {NEED_FIX[k]}" for k, v in needs]
+        return "\n".join(lines) if lines else "nothing on the game's to-do list"
+
+    def v_unlock(self, *target: str) -> str:
+        r = self.call("unlock", "".join(target)) if target else self.call("unlock")
+        if "targets" in r:
+            return "unlock <thing>, things: " + " ".join(r["targets"]) + " (or a research name)"
+        if r["done"]:
+            steps = [st["step"] for st in r["steps"]]
+            return f"{r['target']}: already unlocked." + (f" Next: `{steps[-1]}`." if steps else "")
+        staff = self.call("state").get("staff") or {}
+        heads = sum(staff.get(h, 0) for h in ("Warden", "Foreman", "Chief", "Accountant", "Lawyer", "Psychologist"))
+        offices = sum(1 for x in self.rooms() if x["type"] == "Office")
+        lines = [f"{r['target']} needs: " + " -> ".join(r["research"])]
+        n = 0
+        for st in r["steps"]:
+            n += 1
+            cmd = st["step"]
+            text = cmd if cmd == "wait" else f"`{cmd}`"
+            lines.append(f"{n}. {text}" + (f" ({st['why']})" if st.get("why") else "") +
+                         (f" - after {st['after']}" if st.get("after") else ""))
+            if cmd.startswith("hire ") and cmd.split()[1] in DEPARTMENT_HEAD.values():
+                n += 1
+                lines.append(f"{n}. `room office x1 y1 x2 y2` (6x6) for the {cmd.split()[1]}")
+        if offices < heads:
+            lines.append(f"WARNING: {heads} department heads but {offices} offices: build `room office` (6x6) first.")
+        lines.append(r["note"])
+        return "\n".join(lines)
 
     def v_utilmap(self, kind: str = "both", *xy: str) -> str:
         from ..state.report import built_area, utility_map
@@ -430,6 +497,10 @@ class Easy:
         lines = [f"construction jobs waiting: {pend['construction_jobs']}"]
         if pend["work_queue"]:
             lines.append("work queue: " + _counts(pend["work_queue"]))
+        for a in pend.get("unreachable", [])[:3]:
+            lines.append(f"UNREACHABLE: {a['cells']} construction jobs at x {a['x1']}..{a['x2']}, y {a['y1']}..{a['y2']}: "
+                         "no workman can walk there (walls or a fence in the way). Open a way in: pave a gap in "
+                         "the fence/wall (`lua \"return api.build_line('ConcreteTiles', x1, y1, x2, y2)\"`) or add a door.")
         try:
             planned = self.call("planned")
         except BridgeError:
@@ -465,6 +536,10 @@ class Easy:
                 out.append("ORDERS never built: " + ", ".join(v["failed"][:10]))
         except BridgeError:
             pass
+        from ..state.report import pending_work
+        for a in pending_work(root).get("unreachable", [])[:3]:
+            out.append(f"UNREACHABLE: {a['cells']} construction jobs at x {a['x1']}..{a['x2']}, y {a['y1']}..{a['y2']} "
+                       "(walls/fence in the way; `progress` says how to open a way in)")
         t = sit.get("temperature")
         if t is not None and t >= 60:
             out.append(f"RIOT RISK: prison temperature {t:.0f}/100 (`todo`, `report`)")
@@ -612,10 +687,13 @@ class Easy:
         beds = s.get("cell_capacity_total", 0)
         stations = sit["power_stations"]
         todo: list[str] = []
+        later: list[str] = []
         for prob in (s.get("utilities") or {}).get("problems") or []:
             if "No PowerStation" in prob or "No WaterPumpStation" in prob:
                 continue
-            todo.append(prob.replace("api.utilities(true)", "`power on`").replace('api.hookup("power")', "`hookup power`"))
+            text = prob.replace("api.utilities(true)", "`power on`").replace('api.hookup("power")', "`hookup power`")
+            # a full station is a warning, not an emergency (one kitchen draws exactly 50 by design)
+            (later if "nearly full" in text else todo).append(text)
         if not stations:
             todo.append("Power: `station power x y` (3x3, $5000) near where the kitchen will be. One station feeds 50.")
         if not sit["pumps"]:
@@ -690,10 +768,58 @@ class Easy:
             todo.append("An Office for the Warden: `room office x1 y1 x2 y2` (6x6).")
         for r in [r for r in rooms if r["missing_something"]][:2]:
             todo.append(f"{r['type']} at {r['x1']},{r['y1']} is missing something (furniture not built yet? power? water?).")
+        todo += self._needs_steps(sit, have, pris)
+        if staff.get("Warden") and have.get("Office") and pris >= 20:
+            todo += self._research_steps(staff, have, (s.get("money") or 0))
+        todo += later
         if not todo:
             todo.append("The basics are in place. `wait 120`, then `report`. Consider research (`research`).")
         head = f"{s.get('clock')}, money ${_n(s.get('money'))}, prisoners {pris}, beds {beds}. Do these in order:"
-        return "\n".join([head] + [f"{i}. {t}" for i, t in enumerate(todo[:7], 1)])
+        return "\n".join([head] + [f"{i}. {t}" for i, t in enumerate(todo[:9], 1)])
+
+    def _needs_steps(self, sit: dict, have: dict[str, int], pris: int) -> list[str]:
+        """Rooms that answer the worst prisoner needs (measured: Spirituality 72, Recreation 64 at day 24)."""
+        out = []
+        needs = dict(sit.get("worst_needs") or [])
+        complain = sit.get("complaining_about") or {}
+        if needs.get("Spirituality", 0) >= 50 and not have.get("Chapel") and pris >= 30:
+            out.append(f"Spirituality {needs['Spirituality']}/100: `room chapel x1 y1 x2 y2` (10x10 with walls).")
+        if needs.get("Recreation", 0) >= 50 and not have.get("CommonRoom") and pris >= 30:
+            out.append(f"Recreation {needs['Recreation']}/100: `room commonroom x1 y1 x2 y2` (10x8), then "
+                       "`hookup power` for the TV.")
+        if complain.get("Clothing", 0) >= max(5, pris // 10) and not have.get("Laundry"):
+            out.append(f"{complain['Clothing']} complain about Clothing: a laundry. `unlock laundry` lists the steps.")
+        return out
+
+    def _research_steps(self, staff: dict, have: dict[str, int], money: float) -> list[str]:
+        """The next research per free department head, from RESEARCH_LADDER."""
+        try:
+            items = {r["name"]: r for r in self.call("research")["research"]}
+        except (BridgeError, KeyError, TypeError):
+            return []
+        busy = {r.get("by") for r in items.values() if str(r.get("status", "")).startswith("in progress")}
+        heads = 1 + sum(staff.get(h, 0) for h in DEPARTMENT_HEAD.values())
+        out: list[str] = []
+        for name, why in RESEARCH_LADDER:
+            r = items.get(name)
+            if not r or r["status"] == "done" or str(r["status"]).startswith("in progress"):
+                continue
+            by = r.get("by") or "Warden"
+            if by in busy or r["status"] != "available":
+                continue
+            busy.add(by)
+            if by != "Warden" and not staff.get(by):
+                out.append(f"Research {name} ({why}) is done by the {by}: `hire {by}` and `room office x1 y1 x2 y2` "
+                           "(6x6, every department head needs their own).")
+            elif have.get("Office", 0) < heads:
+                out.append(f"{heads} department heads share {have.get('Office', 0)} office(s): `room office ...` (6x6) "
+                           "so each can research.")
+                break
+            elif money >= r["cost"] + 5000:
+                out.append(f"`research {name}` (${_n(r['cost'])}, the {by}): {why}.")
+            if len(out) >= 2:
+                break
+        return out
 
     def v_lua(self, *code: str) -> str:
         import json

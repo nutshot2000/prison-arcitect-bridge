@@ -101,6 +101,34 @@ class ReportTests(unittest.TestCase):
         wm = utility_map(self.root, 0, 0, 10, 10, "water").splitlines()
         self.assertEqual(wm[3][5 + 1], "s")
 
+    def test_unreachable_construction(self):
+        from pa_agent.state.report import pending_work
+        # a fence line at x=5 splits a 10x6 map; the workman is west of it
+        fence = "\n".join(f'    BEGIN "5 {y}" Mat Fence END' for y in range(6))
+        save = f"""
+NumCellsX 10
+NumCellsY 6
+BEGIN Cells
+{fence}
+END
+BEGIN Objects
+    BEGIN "[i 0]" Id.i 0 Type Workman Pos.x 1.5 Pos.y 1.5 END
+END
+BEGIN WorkQ
+    BEGIN Items
+        BEGIN "[i 0]" Id 1 Type Construct CellX 2 CellY 2 MatType BrickWall END
+        BEGIN "[i 1]" Id 2 Type Construct CellX 7 CellY 2 MatType BrickWall END
+        BEGIN "[i 2]" Id 3 Type Construct CellX 8 CellY 2 MatType BrickWall END
+        BEGIN "[i 3]" Id 4 Type Construct CellX 6 CellY 4 MatType ConcreteTiles END
+    END
+END
+"""
+        p = pending_work(parse_prison(save))
+        self.assertEqual(p["construction_jobs"], 4)
+        # 6,4 is next to the fence but on the far side; 7,2 and 8,2 touch -> two areas
+        self.assertEqual(sum(a["cells"] for a in p["unreachable"]), 3)
+        self.assertEqual(p["unreachable"][0], {"cells": 2, "x1": 7, "y1": 2, "x2": 8, "y2": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

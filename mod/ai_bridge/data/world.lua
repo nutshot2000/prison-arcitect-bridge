@@ -737,7 +737,13 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
                Table = { 4, 1 }, Bench = { 4, 1 }, ShowerHead = { 1, 1 }, Drain = { 1, 1 },
                ServingTable = { 5, 1 }, WeightsBench = { 1, 1 }, PhoneBooth = { 1, 1 }, Tv = { 1, 1 },
                OfficeDesk = { 2, 1 }, FilingCabinet = { 1, 1 }, Chair = { 1, 1 }, SofaChairDouble = { 2, 1 },
-               GuardLocker = { 1, 1 }, MedicalBed = { 2, 2 }, Bin = { 1, 1 } }
+               GuardLocker = { 1, 1 }, MedicalBed = { 2, 2 }, Bin = { 1, 1 },
+               -- sizes from the game's materials.txt
+               VisitorTable = { 3, 2 }, Altar = { 3, 2 }, Pews = { 4, 1 }, PrayerMat = { 1, 1 },
+               PoolTable = { 3, 2 }, LargeTv = { 2, 1 }, LaundryMachine = { 1, 1 }, LaundryBasket = { 1, 1 },
+               IroningBoard = { 3, 1 }, SchoolDesk = { 1, 2 }, LibraryBookshelf = { 3, 1 },
+               SortingTable = { 3, 1 }, WorkshopSaw = { 3, 1 }, WorkshopPress = { 3, 1 },
+               SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 } }
 
 -- PlaceObject anchor for a footprint whose left/top cell is given (facing down, 0,1).
 -- Measured live 29 Sep 2026 (object Pos after install): an object ordered at x covers
@@ -860,17 +866,104 @@ LAYOUTS.infirmary = function(x1, y1, x2, y2, out)
     return "Infirmary: medical beds. Zone as MedicalWard; needs a Doctor (Health research)."
 end
 
+-- Game requirements from materials.txt (BEGIN Room ... Requirement) -- 30 Sep 2026.
+local function need_inside(kind, x1, y1, x2, y2, w, h)
+    if x2 - x1 + 1 < w or y2 - y1 + 1 < h then
+        error(("a %s needs at least %dx%d cells inside (the rectangle you give includes the walls, so %dx%d)")
+              :format(kind, w, h, w + 2, h + 2), 0)
+    end
+end
+
+-- Chapel: Altar + Pews + PrayerMat, at least 6x6, indoors. Calms Spirituality.
+LAYOUTS.chapel = function(x1, y1, x2, y2, out)
+    need_inside("chapel", x1, y1, x2, y2, 6, 6)
+    put(out, "Altar", math.floor((x1 + x2) / 2) - 1, y1)
+    put(out, "PrayerMat", x1, y1); put(out, "PrayerMat", x2, y1)
+    local y = y1 + 3
+    while y <= y2 - 1 do  -- the bottom row stays free as a walkway to the door
+        local x = x1
+        while x + 3 <= x2 do put(out, "Pews", x, y, "up"); x = x + 4 end  -- side by side; the free row is the aisle
+        y = y + 2
+    end
+    return "Chapel: altar, pews and prayer mats. Prisoners with a Spirituality need pray here. Zone as Chapel."
+end
+
+-- Common room: no required objects; TV, sofa, pool table, phone. Calms Recreation.
+LAYOUTS.commonroom = function(x1, y1, x2, y2, out)
+    need_inside("common room", x1, y1, x2, y2, 4, 4)
+    put(out, "Tv", x1, y1); put(out, "SofaChairDouble", x1, y1 + 2)
+    if x2 - x1 >= 6 and y2 - y1 >= 3 then put(out, "PoolTable", x1 + 4, y1 + 1) end
+    put(out, "PhoneBooth", x2, y1)
+    if y2 - y1 >= 5 then put(out, "Bench", x1, y2 - 1) end
+    put(out, "Bin", x2, y2)
+    return "Common room: TV (needs power: hookup), sofa, pool table, phone. Prisoners relax here in FreeTime."
+end
+
+-- Parole room: a VisitorTable, at least 5x5 inside. Prisoners up for parole get their hearing here.
+LAYOUTS.parole = function(x1, y1, x2, y2, out)
+    need_inside("parole room", x1, y1, x2, y2, 5, 5)
+    put(out, "VisitorTable", x1 + 1, y1 + 1)
+    return "Parole room: a visitor table. Prisoners up for parole have their hearing here (the To-do 'up for parole')."
+end
+
+-- Laundry (PrisonLabour): LaundryMachine (power + water), LaundryBasket, IroningBoard. Fixes Clothing.
+LAYOUTS.laundry = function(x1, y1, x2, y2, out)
+    need_inside("laundry", x1, y1, x2, y2, 4, 3)
+    for x = x1, math.min(x2, x1 + 4), 2 do put(out, "LaundryMachine", x, y1) end
+    put(out, "LaundryBasket", x2, y1 + 1)
+    put(out, "IroningBoard", x1, y2, "up")
+    return "Laundry: washing machines (need power AND water: hookup both), a basket and an ironing board. " ..
+           "Janitors (Cleaning research) or working prisoners run it; it fixes the Clothing need."
+end
+
+-- Classroom (Education): SchoolDesks + a teacher's OfficeDesk, at least 5x5.
+LAYOUTS.classroom = function(x1, y1, x2, y2, out)
+    need_inside("classroom", x1, y1, x2, y2, 5, 5)
+    put(out, "OfficeDesk", x1, y1)
+    local y = y1 + 2
+    while y + 1 <= y2 - 1 do
+        for x = x1, x2, 2 do put(out, "SchoolDesk", x, y) end
+        y = y + 3
+    end
+    return "Classroom: school desks and a teacher's desk. Programs are set in the game's Reform tab."
+end
+
+-- Workshop (PrisonLabour): WorkshopSaw + WorkshopPress (power) + a Table, enclosed, at least 5x5.
+LAYOUTS.workshop = function(x1, y1, x2, y2, out)
+    need_inside("workshop", x1, y1, x2, y2, 5, 5)
+    put(out, "WorkshopSaw", x1, y1)
+    if x2 - x1 >= 6 then put(out, "WorkshopPress", x1 + 4, y1) else put(out, "WorkshopPress", x1, y1 + 2) end
+    put(out, "Table", x1, y2 - 1)
+    return "Workshop: saw, press (power: hookup) and a table. Prisoners make licence plates for money; it needs " ..
+           "a Workshop Induction program and guards (tools are contraband)."
+end
+
+-- Library (PrisonLabour): LibraryBookshelf + SortingTable, at least 5x5.
+LAYOUTS.library = function(x1, y1, x2, y2, out)
+    need_inside("library", x1, y1, x2, y2, 5, 5)
+    put(out, "LibraryBookshelf", x1, y1); put(out, "SortingTable", x1, y1 + 2)
+    if x2 - x1 >= 6 then put(out, "LibraryBookshelf", x1 + 4, y1) end
+    return "Library: bookshelves and a sorting table. Prisoners relax and read here."
+end
+
 -- Rooms that need no furniture: just the zone (they still need a floor, and
 -- Deliveries/Garbage/Storage work best next to the road).
 local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put it next to the road.",
                       garbage = "Garbage: bins are collected here. Put it next to the road.",
-                      storage = "Storage: supplies are kept here." }
+                      storage = "Storage: supplies are kept here.",
+                      cleaning = "Cleaning cupboard (Cleaning research, 3x3+ inside): Janitors and working prisoners " ..
+                                 "clean from here." }
 
 -- furnish kind -> room type to zone
 local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower", yard = "Yard",
                     holding = "HoldingCell", cell = "Cell", office = "Office", staffroom = "Staffroom",
                     infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage",
-                    dormitory = "Dormitory", visitation = "Visitation" }
+                    dormitory = "Dormitory", visitation = "Visitation", chapel = "Chapel", commonroom = "CommonRoom",
+                    parole = "ParoleRoom", laundry = "Laundry", classroom = "Classroom", workshop = "Workshop",
+                    library = "Library", cleaning = "CleaningCupboard" }
+-- research the game needs before the room (or its furniture) can be built
+local ROOM_RESEARCH = { laundry = "PrisonLabour", workshop = "PrisonLabour", library = "PrisonLabour",
+                        classroom = "Education", cleaning = "Cleaning", infirmary = "Health" }
 
 local function kind_names()
     local names = {}
@@ -915,6 +1008,14 @@ function api.room(kind, x1, y1, x2, y2, door_side)
     local room = KIND_ROOM[kind]
     if not room then error("unknown room kind '" .. kind .. "'. Choose one of: " .. kind_names(), 0) end
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, kind)
+    local res = ROOM_RESEARCH[kind]
+    if res and NATIVE and api.is_researched and not api.is_researched(res) then
+        error("a " .. kind .. " needs the " .. res .. " research first. api.unlock(\"" .. kind ..
+              "\") lists the steps.", 0)
+    end
+    if kind == "cleaning" and (x2 - x1 - 1 < 3 or y2 - y1 - 1 < 3) then
+        error("a cleaning cupboard needs 3x3 inside (5x5 with walls)", 0)
+    end
     local inside, built
     if OUTDOOR[kind] then
         inside = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
@@ -932,7 +1033,8 @@ function api.room(kind, x1, y1, x2, y2, door_side)
 end
 doc("room", "kind, x1, y1, x2, y2, [door_side]",
     "EASIEST: build a whole room in one call: walls + floor + door + furniture + zone. kind: kitchen, canteen, shower, " ..
-    "yard, holding, cell, office, staffroom, infirmary, deliveries, garbage, storage. The rectangle includes the walls.",
+    "yard, holding, cell, office, staffroom, infirmary, deliveries, garbage, storage, chapel, commonroom, parole, " ..
+    "laundry, classroom, workshop, library, cleaning. The rectangle includes the walls.",
     "api.room(\"kitchen\", 60, 30, 70, 38, \"south\")")
 
 -- A row of cells facing south onto a corridor. Each cell is 3 wide x 3 deep inside.
@@ -1760,10 +1862,20 @@ local RESEARCH = {
 }
 local DEPARTMENT_HEAD = { Warden = "Warden", Security = "Chief", Maintainance = "Foreman", Finance = "Accountant",
                           Legal = "Lawyer", MentalHealth = "Psychologist" }
+-- what each research unlocks (research.txt tooltips + the Research lines in materials.txt)
 local UNLOCKS = { Maintainance = "Foreman", Security = "Chief", Legal = "Lawyer", MentalHealth = "Psychologist",
-                  Finance = "Accountant", Health = "Doctor", Cleaning = "Janitor", GroundsKeeping = "Gardener",
-                  Dogs = "DogHandler", Armoury = "ArmedGuard", GuardTowers = "Sniper", Cctv = "CCTV",
-                  RemoteAccess = "remote doors", Education = "Teacher/classes", PrisonLabour = "workshop jobs" }
+                  Finance = "Accountant", Health = "Doctor, infirmary", Cleaning = "Janitor, cleaning cupboard",
+                  GroundsKeeping = "Gardener", Dogs = "DogHandler, kennel", Armoury = "ArmedGuard, armoury",
+                  GuardTowers = "Sniper", Cctv = "CCTV cameras", RemoteAccess = "remote doors",
+                  Education = "classroom, programs", PrisonLabour = "laundry, workshop, library, shop, prisoner jobs",
+                  Patrols = "guard patrols", Deployment = "guard deployment", Contraband = "metal detectors, searches",
+                  Policy = "policy tab", AdvancedManagement = "food/laundry logistics, regime per group",
+                  ExtraGrant = "more grants", BankLoans = "bank loans", LandExpansion = "buy more land",
+                  BodyArmour = "guard armour", Tazers = "tazers for the Chief", TazersForEveryone = "tazers for guards" }
+local RESEARCH_HOURS = { Legal = 12, Education = 12, LandExpansion = 12, Armoury = 12, BankLoans = 12,
+                         LowerTaxes1 = 48, LowerTaxes2 = 48, GuardTowers = 18, Deathrow = 24,
+                         PermanentPunishment = 24, RemoveMinCellSize = 24, ReduceExecutionLiability = 72,
+                         LegalPrep = 72, LegalDefense = 3 }  -- the rest take 6 game hours (Time 360)
 
 local function research_state()
     local out = {}
@@ -1776,6 +1888,11 @@ end
 
 local function researched(state, name)
     return name == "" or name == nil or (state[name] and state[name].percent >= 100)
+end
+
+function api.is_researched(name)
+    if name == "Warden" then return api.count("Warden").Warden > 0 end
+    return researched(research_state(), name)
 end
 
 function api.research(name)
@@ -1809,13 +1926,92 @@ function api.research(name)
         elseif s.researching then status = "in progress " .. s.percent .. "%"
         elseif researched(st, r[1]) then status = "available"
         else status = "locked (needs " .. r[1] .. ")" end
-        list[#list + 1] = { name = k, status = status, cost = r[3], by = DEPARTMENT_HEAD[r[2]], unlocks = UNLOCKS[k] }
+        list[#list + 1] = { name = k, status = status, cost = r[3], by = DEPARTMENT_HEAD[r[2]], unlocks = UNLOCKS[k],
+                            requires = r[1] }
     end
     table.sort(list, function(a, b) return a.name < b.name end)
     return { research = list, warden_hired = researched(st, "Warden"),
              how = "api.research(\"Health\") starts one. The cost is paid when it starts." }
 end
 doc("research", "[name]", "No name: list research with status. With a name: start researching it.", "api.research(\"Health\")")
+
+-- ---- unlock planner ------------------------------------------------------------------
+-- What does it take to get X? Walks the research tree (research.txt: Requires + Admin) back to the Warden
+-- and lists the steps still to do, in order: hire the department head, give them an Office, research, build.
+local UNLOCK_ALIASES = { janitor = "Cleaning", gardener = "GroundsKeeping", doctor = "Health", foreman = "Maintainance",
+    chief = "Security", accountant = "Finance", lawyer = "Legal", psychologist = "MentalHealth", doghandler = "Dogs",
+    armedguard = "Armoury", sniper = "GuardTowers", teacher = "Education", laundry = "PrisonLabour",
+    workshop = "PrisonLabour", library = "PrisonLabour", shop = "PrisonLabour", classroom = "Education",
+    cleaning = "Cleaning", cleaningcupboard = "Cleaning", infirmary = "Health", kennel = "Dogs", armoury = "Armoury",
+    cctv = "Cctv", grants = "ExtraGrant", loans = "BankLoans", land = "LandExpansion", logistics = "AdvancedManagement",
+    patrols = "Patrols", deployment = "Deployment", metaldetector = "Contraband", tazers = "Tazers" }
+local UNLOCK_FINAL = { janitor = "hire Janitor 2", gardener = "hire Gardener 1", doctor = "hire Doctor 2",
+    foreman = "hire Foreman", chief = "hire Chief", accountant = "hire Accountant", lawyer = "hire Lawyer",
+    psychologist = "hire Psychologist", doghandler = "hire DogHandler 2", armedguard = "hire ArmedGuard 2",
+    sniper = "hire Sniper", laundry = "room laundry x1 y1 x2 y2 (8x6 with walls), hookup both; Janitors (unlock janitor) or working prisoners run it",
+    workshop = "room workshop x1 y1 x2 y2 (9x7 with walls), hookup power",
+    library = "room library x1 y1 x2 y2 (7x7+ with walls)", classroom = "room classroom x1 y1 x2 y2 (7x7+ with walls)",
+    cleaning = "room cleaning x1 y1 x2 y2 (5x5 with walls)", cleaningcupboard = "room cleaning x1 y1 x2 y2 (5x5 with walls)",
+    infirmary = "room infirmary x1 y1 x2 y2, hire Doctor 2" }
+
+function api.unlock(target)
+    if target == nil or target == "" then
+        local names = {}
+        for k in pairs(UNLOCK_ALIASES) do names[#names + 1] = k end
+        table.sort(names)
+        return { usage = "api.unlock(\"laundry\") or a research name", targets = names }
+    end
+    local key = string.lower(string.gsub(tostring(target), "[%s_%-]", ""))
+    local res = UNLOCK_ALIASES[key]
+    if not res then
+        for k in pairs(RESEARCH) do if string.lower(k) == key then res = k end end
+    end
+    if not res then
+        error("don't know how to unlock '" .. tostring(target) .. "'. Try a staff type (Janitor), a room (laundry) " ..
+              "or a research name; api.unlock() lists them.", 0)
+    end
+    local st = research_state()
+    local chain, r = {}, res
+    while r and r ~= "Warden" and RESEARCH[r] do table.insert(chain, 1, r); r = RESEARCH[r][1] end
+    local steps, heads_needed = {}, {}
+    local counts = api.count({ "Warden", "Foreman", "Chief", "Accountant", "Lawyer", "Psychologist" })
+    if (counts.Warden or 0) == 0 then
+        steps[#steps + 1] = { step = "hire Warden", why = "the Warden researches the first level" }
+    end
+    heads_needed.Warden = true
+    local blocked = false
+    for _, name in ipairs(chain) do
+        local item = RESEARCH[name]
+        local head = DEPARTMENT_HEAD[item[2]]
+        local s = st[name] or { percent = 0 }
+        if s.percent < 100 then
+            if head and head ~= "Warden" and (counts[head] or 0) == 0 and not heads_needed[head] then
+                steps[#steps + 1] = { step = "hire " .. head, why = head .. " researches " .. name,
+                                      after = blocked and "the research above finishes" or nil }
+            end
+            if head then heads_needed[head] = true end
+            if s.researching then
+                steps[#steps + 1] = { step = "wait", why = name .. " is being researched: " .. s.percent .. "%" }
+            else
+                steps[#steps + 1] = { step = "research " .. name,
+                                      why = ("$%d, about %d game hours, done by the %s"):format(item[3],
+                                            RESEARCH_HOURS[name] or 6, tostring(head)),
+                                      after = blocked and "the research above finishes" or nil }
+            end
+            blocked = true
+        end
+    end
+    local final = UNLOCK_FINAL[key]
+    if final then steps[#steps + 1] = { step = final, after = blocked and "the research is done" or nil } end
+    local heads = {}
+    for h in pairs(heads_needed) do heads[#heads + 1] = h end
+    table.sort(heads)
+    return { target = target, research = chain, done = not blocked, steps = steps, heads = heads,
+             note = "Every department head (" .. table.concat(heads, ", ") .. ") needs their OWN Office " ..
+                    "(room office) or they cannot research. Research is paid when it starts." }
+end
+doc("unlock", "target", "What it takes to unlock a staff type, room or research: the steps still to do, in order.",
+    "api.unlock(\"laundry\")")
 
 -- ---- hiring ------------------------------------------------------------------------
 -- price from the game's materials.txt; research needed before the game lets you hire them

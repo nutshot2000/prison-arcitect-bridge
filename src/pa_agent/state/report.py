@@ -24,10 +24,17 @@ from .prison_save import Section
 STAFF = {"Workman", "Guard", "ArmedGuard", "DogHandler", "Cook", "Doctor", "Janitor", "Gardener", "Psychologist",
          "Accountant", "Chief", "Foreman", "Warden", "Lawyer", "Teacher", "Chaplain", "Sniper"}
 # needs that point at a missing thing
-NEED_FIX = {"Hygiene": "showers (need WATER)", "Bladder": "toilets (need WATER)", "Bowels": "toilets (need WATER)",
+NEED_FIX = {"Hygiene": "showers (need WATER): `room shower`", "Bladder": "toilets (need WATER): `hookup water`",
+            "Bowels": "toilets (need WATER): `hookup water`",
             "Food": "kitchen + canteen + cooks (cookers need POWER)", "Sleep": "cells with beds",
-            "Exercise": "a yard with weights", "Recreation": "a yard / TV / phone", "Freedom": "free time in the regime",
-            "Safety": "more guards", "Clothing": "a laundry", "Family": "visitation", "Comfort": "better cells"}
+            "Exercise": "a yard with weights", "Recreation": "`room commonroom` (TV, pool, phone) and FreeTime",
+            "Freedom": "FreeTime/Yard hours in the `regime`", "Safety": "more guards",
+            "Clothing": "a laundry (`unlock laundry`)", "Family": "`room visitation`", "Comfort": "better cells",
+            "Spirituality": "`room chapel` (10x10 with walls)", "Literacy": "a library (`unlock library`)",
+            "Environment": "Janitors to clean (`unlock janitor`)", "Privacy": "single cells instead of dormitories",
+            "Alcohol": "nothing legal supplies it: cut smuggling (`unlock metaldetector`) and wait it out",
+            "Drugs": "nothing legal supplies it: cut smuggling (`unlock metaldetector`); Psychologist later",
+            "Luxuries": "a shop (`unlock shop`)"}
 
 
 def _true(v: Any) -> bool:
@@ -252,7 +259,37 @@ ROOM_REQS: dict[str, dict] = {
     "CleaningCupboard": {"min": (3, 3), "indoor": True},
     "Library": {"min": (5, 5), "indoor": True, "objects": [("LibraryBookshelf",), ("SortingTable",)]},
     "Classroom": {"min": (5, 5), "objects": [("SchoolDesk",), ("OfficeDesk",)]},
+    "Chapel": {"min": (6, 6), "indoor": True, "objects": [("Altar",), ("Pews",), ("PrayerMat",)]},
+    "ParoleRoom": {"min": (5, 5), "indoor": True, "objects": [("VisitorTable",)]},
+    "CommonRoom": {"indoor": True},
 }
+
+
+# The game's To-do items -> the easy verb that clears them (checked against the live panel).
+def todo_action(item: str, rooms: dict[str, int]) -> str:
+    low = item.lower()
+    if low.startswith("prisoner intake"):
+        return "`intake beds` keeps arrivals to free beds" if "beds" not in low else ""
+    if "parole" in low:
+        return ("parole hearings need a Parole room: `room parole x1 y1 x2 y2` (7x7 with walls)"
+                if not rooms.get("ParoleRoom") else "hearings run in the parole room; nothing to do")
+    if "exhausted" in low:
+        return "`room staffroom x1 y1 x2 y2` (8x7) (sofa + DrinkMachine), or another if one exists"
+    if "visitors" in low or "families" in low:
+        return "`room visitation x1 y1 x2 y2` (more tables = more visits)"
+    if "solitary" in low:
+        return "`solitary x y 6`"
+    if "lockdown" in low:
+        return "resolves itself once a lockdown/solitary slot is free"
+    if "injured" in low or "medical" in low:
+        return ("`hire Doctor 2`" if rooms.get("MedicalWard") else "`unlock doctor`, then `room infirmary x1 y1 x2 y2`")
+    if "temperature" in low:
+        return "" if "calm" in low else "more guards (`auto`), fix the worst needs in `report`, `solitary` for the queue"
+    if "waste" in low:
+        return "Bins: `place Bin x y` in busy rooms"
+    if "fire" in low:
+        return "`place Sprinkler x y` in kitchens/canteens, then `hookup water`"
+    return ""
 
 
 DOOR_TYPES = {"Door", "JailDoor", "JailDoorLarge", "StaffDoor", "SolitaryDoor", "RemoteDoor", "RoadGate",
@@ -360,7 +397,55 @@ def pending_work(root: Section) -> dict[str, Any]:
         t = str(it.get("Type"))
         what = it.get("ObjType") or it.get("MatType")
         jobs[f"{t} {what}" if what not in (None, "") else t] += 1
-    return {"construction_jobs": construction, "work_queue": dict(jobs.most_common(12))}
+    construct = [(int(it.num("CellX")), int(it.num("CellY"))) for it in (items.sections() if items else [])
+                 if str(it.get("Type")) == "Construct" and it.num("CellX") is not None and it.num("CellY") is not None]
+    return {"construction_jobs": construction + len(construct), "work_queue": dict(jobs.most_common(12)),
+            "unreachable": unreachable_jobs(root, construct)}
+
+
+def _areas(points: list[tuple[int, int]]) -> list[dict]:
+    """Group cells into touching areas (8-neighbour) with a bounding box, biggest first."""
+    left, out = set(points), []
+    while left:
+        seed = left.pop()
+        group, todo = [seed], [seed]
+        while todo:
+            x, y = todo.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    q = (x + dx, y + dy)
+                    if q in left:
+                        left.remove(q); group.append(q); todo.append(q)
+        xs, ys = [g[0] for g in group], [g[1] for g in group]
+        out.append({"cells": len(group), "x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys)})
+    return sorted(out, key=lambda a: -a["cells"])
+
+
+def unreachable_jobs(root: Section, jobs: list[tuple[int, int]]) -> list[dict]:
+    """Construction jobs no Workman can walk to (live: rooms ordered outside the old fence line sat unbuilt).
+    Staff open doors, so only walls and fences block them."""
+    if not jobs:
+        return []
+    cells = _cells(root)
+    w = int(root.num("NumCellsX", 0) or 0) or (max(p[0] for p in cells) + 1 if cells else 0)
+    h = int(root.num("NumCellsY", 0) or 0) or (max(p[1] for p in cells) + 1 if cells else 0)
+    start = [p for p in (_pos(o) for o in _objects(root) if o.get("Type") == "Workman") if p]
+    if not start or not w or not h:
+        return []
+
+    def blocked(p):
+        m = str(cells.get(p, {}).get("Mat", ""))
+        return "Wall" in m or m == "Fence"
+
+    seen, todo = set(start), list(start)
+    while todo:
+        x, y = todo.pop()
+        for q in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if q not in seen and 0 <= q[0] < w and 0 <= q[1] < h and not blocked(q):
+                seen.add(q); todo.append(q)
+    bad = [j for j in jobs if not any(q in seen for q in (j, (j[0] + 1, j[1]), (j[0] - 1, j[1]),
+                                                           (j[0], j[1] + 1), (j[0], j[1] - 1)))]
+    return _areas(bad)
 
 
 def verify_orders(root: Section, ordered: list[dict], now: float) -> dict[str, Any]:
