@@ -197,8 +197,11 @@ def tunnels(root: Section) -> list[dict]:
         # the exit hole outside the fence is also marked Entrance: list the inside ones first
         entrances = sorted((p for p in pts if _true(cells[p].get("Entrance"))), key=out_of)
         outside = any(out_of(p) for p in pts)
+        # found = its entrance INSIDE the fence is discovered (live: a tunnel search only marked the exit
+        # holes outside the fence as discovered; the entrances under the toilets stayed hidden)
+        inside = [p for p in entrances if not out_of(p)] or entrances
         out.append({"cells": a["cells"], "x1": a["x1"], "y1": a["y1"], "x2": a["x2"], "y2": a["y2"],
-                    "entrances": entrances, "discovered": any(_true(cells[p].get("Discovered")) for p in pts),
+                    "entrances": entrances, "discovered": all(_true(cells[p].get("Discovered")) for p in inside),
                     "outside_fence": outside})
     return out
 

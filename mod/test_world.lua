@@ -282,7 +282,7 @@ Game.DebugOut = function(s, fn)
     if s == "saveresult" then return "ok C:/saves/" .. tostring(saves[#saves]) .. ".prison" end
     if s == "grants" then
         return "records 3 catalogue 20;Grant_bootstraps|20000|10000|" .. (grant_taken and "1" or "0") ..
-               "||open;Grant_Administration|5000|5000|0||locked;Grant_Health|3000|4000|1|done|open"
+               "||open;Grant_Administration|5000|5000|0||locked;Grant_Health|3000|4000|2||open"
     end
     local gname = string.match(s, "^grant:(.+)$")
     if gname then

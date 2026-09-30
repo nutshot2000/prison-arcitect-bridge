@@ -1919,7 +1919,8 @@ function api.grants()
     for item in string.gmatch(r, ";([^;]+)") do
         local name, adv, comp, st, done, lock = string.match(item, "^([^|]*)|(-?%d+)|(-?%d+)|(-?%d+)|(%a*)|(%a+)$")
         if name then
-            local state = done == "done" and "completed" or st == "1" and "accepted" or
+            -- record state measured live: 0 available, 1 accepted, 2 completed (bootstraps paid out at once)
+            local state = (done == "done" or tonumber(st) == 2) and "completed" or st == "1" and "accepted" or
                           (lock == "open" and "available" or "locked")
             list[#list + 1] = { name = name, advance = tonumber(adv), completion = tonumber(comp), status = state }
         end
@@ -1942,6 +1943,14 @@ function api.grant(name)
              note = "Accepted: the advance is in the bank; build what the To-do list asks for to get the rest." }
 end
 doc("grant", "name", "Accept a grant (name from api.grants(), e.g. \"Grant_bootstraps\").", "api.grant(\"Grant_bootstraps\")")
+
+function api.read_letter()
+    local r = native("readletter")
+    if type(r) ~= "string" then error("needs bridge DLL 0.5.1 (install with the game closed)", 0) end
+    return { done = r, note = "The CEO's letter is marked as read (as if opened from the To-do list)." }
+end
+doc("read_letter", "", "Mark the CEO's letter as read (clears 'Read the CEO's letter' on the To-do list).",
+    "api.read_letter()")
 
 function api.objectives()
     local r = native("objectives")

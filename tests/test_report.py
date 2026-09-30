@@ -151,7 +151,7 @@ END
         self.assertEqual(len(t), 2)
         self.assertEqual(t[0]["cells"], 5)
         self.assertTrue(t[0]["outside_fence"])     # reaches y=1, beyond the fence at y=2
-        self.assertTrue(t[0]["discovered"])
+        self.assertFalse(t[0]["discovered"])      # only the exit outside was found; the entrance at 5,5 was not
         self.assertFalse(t[1]["outside_fence"])
         self.assertEqual(t[1]["entrances"], [(7, 6)])
 

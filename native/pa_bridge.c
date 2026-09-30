@@ -120,7 +120,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.5.0"
+#define BRIDGE_VERSION "0.5.1"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -446,6 +446,7 @@ static const sig_t NATIVE_SIGS[] = {
     {0x1407c77e0ULL, {0x40, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x05, 0x13}}, /* toggle lockdown */
     {0x1405cdd20ULL, {0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54}}, /* AcceptGrant */
     {0x1405cdbc0ULL, {0x40, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xE8, 0xB5, 0xFE, 0xFF}}, /* grant prerequisites met */
+    {0x1406717f0ULL, {0x40, 0x53, 0x57, 0x41, 0x54, 0x41, 0x55, 0x48, 0x83, 0xEC}}, /* remove objective */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -867,6 +868,21 @@ static int native_grant(void *L, const char *s, size_t n) {
     return push_str(L, out);
 }
 
+/* Reading the CEO's letter (the letter window, panel type 0x13, at 0x1402cb9bc) removes the
+ * "ReadCeosLetter" objective with 0x1406717f0(world+0xc88, &name, 0) and sets world+0x46dc = 1. */
+typedef void (*remove_objective_t)(void *objs, void *name, u8 flag);
+static const remove_objective_t remove_objective = (remove_objective_t)0x1406717f0ULL;
+static int native_readletter(void *L) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    char name[] = "ReadCeosLetter";
+    msstr str; msstr_ref(&str, name, sizeof name - 1);
+    i32 before = *(i32 *)(w + 0xc88 + 0x3c);
+    remove_objective(w + 0xc88, &str, 0);
+    w[0x46dc] = 1;
+    return push_str(L, *(i32 *)(w + 0xc88 + 0x3c) < before ? "ok" : "ok (it was not on the list)");
+}
+
 /* live objectives (world+0xc88, +0x30/+0x3c; name std::string @0, parent @0x20) */
 static int native_objectives(void *L) {
     u8 *w = get_world();
@@ -1014,6 +1030,7 @@ static int __cdecl bridge_debugout(void *L) {
         if (starts(s, n, "grants")) return native_grants(L);
         if (starts(s, n, "grant:")) return native_grant(L, s + 6, n - 6);
         if (starts(s, n, "objectives")) return native_objectives(L);
+        if (starts(s, n, "readletter")) return native_readletter(L);
         return 0;
     }
     out_log(s, n);
