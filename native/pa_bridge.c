@@ -444,6 +444,8 @@ static const sig_t NATIVE_SIGS[] = {
     {0x140502130ULL, {0x48, 0x83, 0xEC, 0x28, 0x80, 0x79, 0x63, 0x00, 0x74, 0x09}}, /* contraband: announce */
     {0x1407c7c30ULL, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x80, 0xB9, 0xDC, 0x05}}, /* toggle bangup */
     {0x1407c77e0ULL, {0x40, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x05, 0x13}}, /* toggle lockdown */
+    {0x1405cdd20ULL, {0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54}}, /* AcceptGrant */
+    {0x1405cdbc0ULL, {0x40, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xE8, 0xB5, 0xFE, 0xFF}}, /* grant prerequisites met */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -805,6 +807,83 @@ static int native_emergency(void *L, const char *s, size_t n) {
     return push_str(L, out);
 }
 
+/* ---- grants: the Grants object is world+0xd90 (saved as "Grants").
+ * +0x30/+0x3c: catalogue of grant objectives built by the grant scripts at load (0x1405c70a0), each
+ *   0x1a8 bytes: name std::string @0, parent std::string @0x20, advance i32 @0xf4, completion i32 @0xf8.
+ * +0x40/+0x4c: one state record per grant (0x60 bytes): name std::string @0, state i32 @0x20
+ *   (0 available, 1 accepted), accepted-at float @0x24, byte @0x34 checked by the UI before accepting.
+ * AcceptGrant 0x1405cdd20(grants, &name, 1, &emptylist) is what the Grants screen calls: it copies the
+ * grant and its children into the live objectives (world+0xc88) and pays the advance. ---- */
+typedef void (*accept_grant_t)(void *grants, void *name, u8 local, void *list);
+typedef u8 (*grant_prereqs_t)(void *grants, void *name);
+static const accept_grant_t accept_grant = (accept_grant_t)0x1405cdd20ULL;
+/* the UI's lock check: the catalogue grant's prerequisites (+0x188, count +0x194) are all met */
+static const grant_prereqs_t grant_prereqs = (grant_prereqs_t)0x1405cdbc0ULL;
+
+static int native_grants(void *L) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *g = w + 0xd90;
+    static char out[12000]; sbuf b = {out, 0, sizeof out};
+    i32 nc = *(i32 *)(g + 0x3c), nr = *(i32 *)(g + 0x4c);
+    u8 **cat = *(u8 ***)(g + 0x30), **rec = *(u8 ***)(g + 0x40);
+    sb_str(&b, "records "); sb_int(&b, nr); sb_str(&b, " catalogue "); sb_int(&b, nc);
+    for (i32 i = 0; cat && i < nc && i < 400; i++) {
+        u8 *o = cat[i];
+        if (!o || *(u64 *)(o + 0x30) != 0) continue;           /* top-level grants only (no parent) */
+        const char *name = msstr_chars(o);
+        sb_str(&b, ";"); sb_str(&b, name); sb_str(&b, "|"); sb_int(&b, *(i32 *)(o + 0xf4));
+        sb_str(&b, "|"); sb_int(&b, *(i32 *)(o + 0xf8)); sb_str(&b, "|");
+        i32 st = -1; u8 flag = 0;
+        for (i32 j = 0; rec && j < nr; j++) {
+            u8 *r = rec[j];
+            if (r && *(u64 *)(r + 0x10) == *(u64 *)(o + 0x10)) {
+                const char *rn = msstr_chars(r); size_t k = 0, ln = *(u64 *)(r + 0x10);
+                while (k < ln && rn[k] == name[k]) k++;
+                if (k == ln) { st = *(i32 *)(r + 0x20); flag = r[0x34]; break; }
+            }
+        }
+        sb_int(&b, st); sb_str(&b, flag ? "|done" : "|");
+        msstr nm; msstr_ref(&nm, (char *)name, *(u64 *)(o + 0x10));
+        sb_str(&b, grant_prereqs(g, &nm) ? "|open" : "|locked");
+    }
+    return push_str(L, out);
+}
+
+static int native_grant(void *L, const char *s, size_t n) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    if (n == 0 || n > 120) return push_str(L, "error: grant:<name>");
+    char name[128]; memcpy(name, s, n); name[n] = 0;
+    msstr str; msstr_ref(&str, name, n);
+    u8 empty[16]; memset(empty, 0, sizeof empty);
+    if (!grant_prereqs(w + 0xd90, &str)) return push_str(L, "error: locked (its prerequisites are not met yet)");
+    i32 before = *(i32 *)(w + 0xc88 + 0x3c);
+    accept_grant(w + 0xd90, &str, 1, empty);
+    i32 after = *(i32 *)(w + 0xc88 + 0x3c);
+    char out[64]; sbuf b = {out, 0, sizeof out};
+    sb_str(&b, after > before ? "ok " : "error: not accepted (unknown, already taken, or too many at once) ");
+    sb_int(&b, after - before);
+    return push_str(L, out);
+}
+
+/* live objectives (world+0xc88, +0x30/+0x3c; name std::string @0, parent @0x20) */
+static int native_objectives(void *L) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *m = w + 0xc88;
+    static char out[8000]; sbuf b = {out, 0, sizeof out};
+    i32 n = *(i32 *)(m + 0x3c); u8 **arr = *(u8 ***)(m + 0x30);
+    sb_int(&b, n);
+    for (i32 i = 0; arr && i < n && i < 300; i++) {
+        u8 *o = arr[i];
+        if (!o) continue;
+        sb_str(&b, ";"); sb_str(&b, msstr_chars(o));
+        if (*(u64 *)(o + 0x30)) { sb_str(&b, "<"); sb_str(&b, msstr_chars(o + 0x20)); }
+    }
+    return push_str(L, out);
+}
+
 /* ---- screenshots (read the last shown frame from inside the render loop) ---- */
 typedef void (__stdcall *glReadBuffer_t)(u32);
 typedef void (__stdcall *glReadPixels_t)(i32, i32, i32, i32, u32, u32, void *);
@@ -932,6 +1011,9 @@ static int __cdecl bridge_debugout(void *L) {
         if (starts(s, n, "researchlist")) return native_researchlist(L);
         if (starts(s, n, "research:")) return native_research(L, s + 9, n - 9);
         if (starts(s, n, "emergency:")) return native_emergency(L, s + 10, n - 10);
+        if (starts(s, n, "grants")) return native_grants(L);
+        if (starts(s, n, "grant:")) return native_grant(L, s + 6, n - 6);
+        if (starts(s, n, "objectives")) return native_objectives(L);
         return 0;
     }
     out_log(s, n);

@@ -1909,6 +1909,50 @@ end
 doc("emergency", "action", "The game's Emergencies buttons: shakedown, tunnelsearch, drugbust, stop (a search), " ..
     "bangup / lockdown (toggle), status.", "api.emergency(\"tunnelsearch\")")
 
+-- Grants (bridge DLL 0.5): the list the game's Grants screen shows, and accepting one through the
+-- game's own AcceptGrant (pays the advance; the grant's objectives appear on the To-do list).
+function api.grants()
+    local r = native("grants")
+    if type(r) ~= "string" then error("grants need bridge DLL 0.5 (scripts\\install_bridge.ps1 with the game closed)", 0) end
+    if string.sub(r, 1, 6) == "error:" then error(string.sub(r, 8), 0) end
+    local list = {}
+    for item in string.gmatch(r, ";([^;]+)") do
+        local name, adv, comp, st, done, lock = string.match(item, "^([^|]*)|(-?%d+)|(-?%d+)|(-?%d+)|(%a*)|(%a+)$")
+        if name then
+            local state = done == "done" and "completed" or st == "1" and "accepted" or
+                          (lock == "open" and "available" or "locked")
+            list[#list + 1] = { name = name, advance = tonumber(adv), completion = tonumber(comp), status = state }
+        end
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return { grants = list, note = "api.grant(name) accepts an available one: the advance is paid now, the " ..
+                                   "completion money when its objectives are met (see the game's To-do list)." }
+end
+doc("grants", "", "Every grant with advance, completion money and status (available, locked, accepted, completed).",
+    "api.grants()")
+
+function api.grant(name)
+    if type(name) ~= "string" or name == "" then error("grant name required (api.grants() lists them)", 0) end
+    local key = name
+    if not string.find(key, "^Grant_") then key = "Grant_" .. key end
+    local r = native("grant:" .. key)
+    if type(r) ~= "string" then error("grants need bridge DLL 0.5", 0) end
+    if string.sub(r, 1, 6) == "error:" then error(key .. ": " .. string.sub(r, 8), 0) end
+    return { accepted = key, objectives_added = tonumber(string.match(r, "(%-?%d+)$")),
+             note = "Accepted: the advance is in the bank; build what the To-do list asks for to get the rest." }
+end
+doc("grant", "name", "Accept a grant (name from api.grants(), e.g. \"Grant_bootstraps\").", "api.grant(\"Grant_bootstraps\")")
+
+function api.objectives()
+    local r = native("objectives")
+    if type(r) ~= "string" then error("objectives need bridge DLL 0.5", 0) end
+    local out = {}
+    for item in string.gmatch(r, ";([^;]+)") do out[#out + 1] = item end
+    return { count = tonumber(string.match(r, "^(%d+)")), objectives = out }
+end
+doc("objectives", "", "The live objectives (accepted grants and their parts, tutorial items); child<parent.",
+    "api.objectives()")
+
 doc("search", "x, y, [radius]", "Guards search the furniture within radius (default 2) of a cell: finds contraband " ..
     "and tunnel entrances.", "api.search(107, 18)")
 

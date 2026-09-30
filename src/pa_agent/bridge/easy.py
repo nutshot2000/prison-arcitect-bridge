@@ -153,6 +153,10 @@ VERB_HELP = {
                "  head, give them an Office, then build/hire). Things: janitor laundry workshop library classroom\n"
                "  doctor foreman chief accountant psychologist cctv patrols metaldetector grants logistics, or a\n"
                "  research name. `unlock` alone lists them."),
+    "grants": ("grants", "Every grant (government contract): money now + money on completion, and whether it is\n"
+                         "  available, locked (prerequisites), accepted or completed."),
+    "grant": ("grant <name>", "Accept a grant, e.g. `grant bootstraps`. The advance is paid at once; the rest when its\n"
+                              "  objectives (on the game's To-do list) are met. Start with bootstraps and Administration."),
     "emergency": ("emergency <shakedown|tunnelsearch|drugbust|stop|bangup|lockdown|status>",
                   "The game's Emergencies buttons. tunnelsearch finds and fills escape tunnels, shakedown finds\n"
                   "  contraband, drugbust finds narcotics (one search at a time; `stop` ends it). bangup/lockdown\n"
@@ -842,6 +846,21 @@ class Easy:
             if len(out) >= 2:
                 break
         return out
+
+    def v_grants(self) -> str:
+        r = self.call("grants")
+        groups: dict[str, list[str]] = {}
+        for g in r["grants"]:
+            groups.setdefault(g["status"], []).append(
+                f"{g['name'].removeprefix('Grant_')} (${_n(g['advance'])} now + ${_n(g['completion'])} on completion)")
+        lines = [f"{st}: " + "; ".join(groups[st]) for st in ("accepted", "available", "completed", "locked")
+                 if groups.get(st)]
+        lines.append("`grant <name>` accepts an available one (the advance is paid at once).")
+        return "\n".join(lines)
+
+    def v_grant(self, name: str) -> str:
+        r = self.call("grant", name)
+        return f"accepted {r['accepted']}. {r['note']}"
 
     def v_emergency(self, action: str = "status") -> str:
         r = self.call("emergency", action)

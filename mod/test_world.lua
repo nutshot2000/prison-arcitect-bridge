@@ -251,6 +251,7 @@ r = call("overview"); assert(r.ok and #r.result.rows == 27 and #r.result.rows[1]
 local zoned, speed, saves, started = {}, 1, {}, {}
 local research = { Warden = 100, Health = 0, Maintainance = 0 }
 local emergency = { t = 0, b = 0 }
+local grant_taken = false
 World.GetCell = function(x, y)
     if x >= 0 and y >= 0 and x < W and y < H then
         return { CellX = x, CellY = y, Room = { i = zoned[x .. "," .. y] and 7 or -1 } }
@@ -279,6 +280,15 @@ Game.DebugOut = function(s, fn)
     local sp = string.match(s, "^setspeed:(.+)$"); if sp then speed = tonumber(sp); return "ok" end
     local sv = string.match(s, "^save:(.+)$"); if sv then saves[#saves + 1] = sv; return "queued" end
     if s == "saveresult" then return "ok C:/saves/" .. tostring(saves[#saves]) .. ".prison" end
+    if s == "grants" then
+        return "records 3 catalogue 20;Grant_bootstraps|20000|10000|" .. (grant_taken and "1" or "0") ..
+               "||open;Grant_Administration|5000|5000|0||locked;Grant_Health|3000|4000|1|done|open"
+    end
+    local gname = string.match(s, "^grant:(.+)$")
+    if gname then
+        if gname == "Grant_bootstraps" and not grant_taken then grant_taken = true; return "ok 8" end
+        return "error: not accepted (unknown, already taken, or too many at once) 0"
+    end
     local em = string.match(s, "^emergency:(%a+)$")
     if em then
         if em == "tunnelsearch" then emergency.t = 1 elseif em == "stopsearch" then emergency.t = 0 end
@@ -409,6 +419,14 @@ r = call("room", "parole", 70, 60, 76, 66); assert(r.ok and r.result.room == "Pa
 r = call("room", "classroom", 80, 62, 88, 70); assert(not r.ok and string.find(r.error, "Education"), r.error)
 World.Balance = 100
 r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
+-- grants
+r = call("grants"); assert(r.ok and #r.result.grants == 3, J.encode(r))
+local gs = {}
+for _, g in ipairs(r.result.grants) do gs[g.name] = g.status end
+assert(gs.Grant_bootstraps == "available" and gs.Grant_Administration == "locked" and gs.Grant_Health == "completed", J.encode(gs))
+r = call("grant", "bootstraps"); assert(r.ok and r.result.accepted == "Grant_bootstraps" and r.result.objectives_added == 8, J.encode(r))
+r = call("grant", "bootstraps"); assert(not r.ok and string.find(r.error, "not accepted"), J.encode(r))
+r = call("grants"); for _, g in ipairs(r.result.grants) do if g.name == "Grant_bootstraps" then assert(g.status == "accepted") end end
 -- emergencies
 r = call("emergency", "tunnel search"); assert(r.ok and r.result.done == "tunnelsearch" and r.result.state.tunnelsearch, J.encode(r))
 r = call("emergency", "bangup"); assert(r.ok and r.result.state.bangup == true, J.encode(r))
