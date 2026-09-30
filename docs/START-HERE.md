@@ -67,8 +67,9 @@ Then, as the prison fills (check `todo` / `report`):
 
 `todo` shows the game's To-do panel as text plus the **prison temperature** (riot risk). In the test prison it was
 100/100 with 63 prisoners waiting for solitary; 6 solitary cells and a visitation room brought it to 46 within a day.
-Out of space? Move the fence out (`fence` with the bigger rectangle) and pave the old fence line
-(`lua "return api.build_line('ConcreteTiles', x, y1, x, y2)"`).
+Out of space? Move the fence out (`fence` with the bigger rectangle), open the old fence line
+(`remove fence x y1 x y2`) and **wait until it is gone before ordering anything beyond it**. Rooms ordered behind a
+closed fence stall every workman (`room` refuses them now; `progress` shows UNREACHABLE jobs).
 
 ## Rules learned the hard way (live, 28-29 Sep 2026)
 

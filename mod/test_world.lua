@@ -401,6 +401,15 @@ r = call("room", "parole", 70, 60, 76, 66); assert(r.ok and r.result.room == "Pa
 r = call("room", "classroom", 80, 62, 88, 70); assert(not r.ok and string.find(r.error, "Education"), r.error)
 World.Balance = 100
 r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
+-- a room behind a closed fence ring is refused (workmen could never reach it)
+for x = 55, 68 do built[x .. ",55"] = "Fence"; built[x .. ",68"] = "Fence" end
+for y = 55, 68 do built["55," .. y] = "Fence"; built["68," .. y] = "Fence" end
+World.Balance = 100000
+r = call("room", "office", 58, 58, 63, 63); assert(not r.ok and string.find(r.error, "no workman can walk there"), J.encode(r))
+r = call("room", "yard", 57, 57, 66, 66); assert(not r.ok and string.find(r.error, "remove fence"), J.encode(r))
+built["55,60"] = "ConcreteTiles"  -- a gap in the fence
+r = call("room", "office", 58, 58, 63, 63); assert(r.ok, J.encode(r))
+World.Balance = 100
 ---------------------------------------------------------------------------
 -- capacity-aware, island-aware, non-cross-wiring power hookup (fresh script, controlled world)
 ---------------------------------------------------------------------------

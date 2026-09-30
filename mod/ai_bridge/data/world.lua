@@ -633,6 +633,40 @@ local function set_indoors(x1, y1, x2, y2)
     end end
 end
 
+-- Can a workman walk to the area? Live (30 Sep 2026): rooms ordered beyond the old fence line were
+-- unreachable; every workman kept carrying their materials there and giving up, so nothing else got
+-- built either (not even the paving that would have opened the fence). Staff open doors, so only
+-- walls and fences block them. Skipped when there is no workman to start from.
+local function check_reachable(x1, y1, x2, y2, what)
+    local ok, r = pcall(function() return api.objects("Workman", 3) end)
+    if not ok or type(r) ~= "table" or not r.objects or #r.objects == 0 then return end
+    local w, h = map_size()
+    local function inside(x, y) return x >= x1 - 1 and x <= x2 + 1 and y >= y1 - 1 and y <= y2 + 1 end
+    local seen, todo = {}, {}
+    for _, o in ipairs(r.objects) do
+        local sx, sy = math.floor(o.x), math.floor(o.y)
+        if inside(sx, sy) then return end
+        local k = sy * w + sx
+        if not seen[k] then seen[k] = true; todo[#todo + 1] = { sx, sy } end
+    end
+    local i = 1
+    while i <= #todo do
+        local x, y = todo[i][1], todo[i][2]
+        i = i + 1
+        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+            local nx, ny = x + d[1], y + d[2]
+            if nx >= 0 and ny >= 0 and nx < w and ny < h and not seen[ny * w + nx] then
+                seen[ny * w + nx] = true
+                if inside(nx, ny) then return end
+                if not WALLS[Object.GetMaterial(nx, ny) or ""] then todo[#todo + 1] = { nx, ny } end
+            end
+        end
+    end
+    error(what .. " at " .. x1 .. "," .. y1 .. "-" .. x2 .. "," .. y2 .. ": no workman can walk there (a fence " ..
+          "or walls are in the way). Open a way in FIRST: `remove fence x1 y1 x2 y2` on the fence between, wait " ..
+          "until it is gone, then order this again. (Ordered now it stalls every workman.)", 0)
+end
+
 -- The door cell must not get a wall: a wall order there was built over the
 -- finished door (live: kitchen and shower doors turned into BrickWall). A later
 -- order for the same cell replaces the wall order, so order floor there instead.
@@ -644,6 +678,7 @@ end
 function api.building(x1, y1, x2, y2, door_side, door, wall, floor)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "building")
     if x2 - x1 < 2 or y2 - y1 < 2 then error("a building needs at least 3 x 3 cells including walls", 0) end
+    check_reachable(x1, y1, x2, y2, "building")
     door_side = door_side and string.lower(door_side) or "south"
     if not SIDES[door_side] then error("door_side must be north, south, east or west", 0) end
     wall = wall or "BrickWall"
@@ -1019,6 +1054,7 @@ function api.room(kind, x1, y1, x2, y2, door_side)
     local inside, built
     if OUTDOOR[kind] then
         inside = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
+        check_reachable(x1, y1, x2, y2, kind)
         if kind ~= "yard" then api.build_area("ConcreteFloor", x1, y1, x2, y2) end
         built = "outdoor area (no walls)"
     else
@@ -1046,6 +1082,7 @@ local function room_row(x, y, count, cw, ch, door, zone, furnish, what)
     local x2 = x + count * (cw + 1)
     local y2 = y + ch + 1
     rect(x, y, x2, y2 + 2, what .. " (with its 2-cell corridor)")
+    check_reachable(x, y, x2, y2 + 2, what)
     -- floors first: a later order for the same cell replaces an earlier one, so the
     -- dividing walls must be ordered after the floor (live bug: cells had no dividers)
     api.build_area("ConcreteFloor", x + 1, y + 1, x2 - 1, y2 - 1)

@@ -181,3 +181,25 @@ Fixed along the way: fence re-run no longer orders a second RoadGate (two had be
   grid with room, an island and the both-full case.
 - Other fixes since 83e7323: bottom-wall objects face up; the MCP tool list trimmed to the easy verbs + `pa_api`;
   the report counts hungry prisoners and tired staff.
+
+## Follow-up 5 — 30 September 2026: unlocks, new rooms, a riot, and a stalled expansion
+
+- `unlock laundry|janitor|chief` printed the research chains correctly against the live research state
+  (Maintainance by the Warden → Foreman + office → PrisonLabour/Cleaning). `research Maintainance` started and
+  finished (the Foreman shows as hireable in the game's staff menu).
+- `todo` now prints a `do:` command under each game To-do item plus the worst needs. `next` adds the research
+  ladder and chapel/common room for Spirituality/Recreation, and demotes "station nearly full".
+- `room parole 83 10 89 16` built and zoned a ParoleRoom. Real room type names checked against `roomtypes`
+  (Chapel, CommonRoom, ParoleRoom, Laundry, Classroom, Workshop, Library, CleaningCupboard all exist).
+- Riot (day 27): 13 of 14 guards and the Warden down, 42 of 86 hungry, 32 injured. `next`/`auto` counted the
+  unconscious guards as on duty; now only guards on their feet count and replacing them goes to the top.
+  Hired 12 guards + 2 doctors by hand.
+- Stalled expansion: fence moved west (40..147) and the chapel/common room ordered at x 44..53 BEFORE the old
+  fence line at x=62 was opened. The 180 room jobs were unreachable; workmen kept hauling their bricks/concrete
+  to the fence and dropping them (a brick stack ended up outside the fence at 46,7), and the 70 paving jobs on
+  the old line never got materials. `progress`/`problems` now report UNREACHABLE construction jobs from the save
+  (flood fill from the workmen through non-wall cells), and `room`/`cells`/`solitary`/`building` refuse to order
+  anything no workman can reach.
+- DO NOT write `World.GetCell(x, y).Mat` from Lua: it reads back as written, but the game crashed within a minute
+  after 69 fence cells were changed this way. Recovery: the same change made offline in a copy of the autosave
+  (`agent_fixed.prison`: old fence cells at x=62 → ConcreteTiles).

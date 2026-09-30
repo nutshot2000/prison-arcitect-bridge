@@ -499,8 +499,9 @@ class Easy:
             lines.append("work queue: " + _counts(pend["work_queue"]))
         for a in pend.get("unreachable", [])[:3]:
             lines.append(f"UNREACHABLE: {a['cells']} construction jobs at x {a['x1']}..{a['x2']}, y {a['y1']}..{a['y2']}: "
-                         "no workman can walk there (walls or a fence in the way). Open a way in: pave a gap in "
-                         "the fence/wall (`lua \"return api.build_line('ConcreteTiles', x1, y1, x2, y2)\"`) or add a door.")
+                         "no workman can walk there (walls or a fence in the way). They also STALL the workmen, who "
+                         "carry materials there and give up. Open a way in (`remove fence x1 y1 x2 y2` on the fence "
+                         "between) - if even that does not get built, ask the human to cancel these jobs in the game.")
         try:
             planned = self.call("planned")
         except BridgeError:
@@ -557,9 +558,12 @@ class Easy:
         if s.get("paused"):
             self.call("resume", 1); done.append("unpaused (nothing is built while paused)")
         want_guards = max(3, pris // 6 + 2)
-        g = staff.get("Guard", 0)
+        # guards lying unconscious do not count (live riot: 14 hired, 13 down, nothing asked for more)
+        from ..state.report import situation
+        down = situation(self.snapshot()).get("staff_down") or {}
+        g = staff.get("Guard", 0) - down.get("Guard", 0)
         if g < want_guards and money_now > 5000:
-            n = min(want_guards - g, 4, int((money_now - 3000) // 500))
+            n = min(want_guards - g, 12 if down.get("Guard") else 4, int((money_now - 3000) // 500))
             if n > 0:
                 self.call("hire", "Guard", n); done.append(f"hired {n} Guard ({g} -> {g + n}, want {want_guards})")
         rooms = self.rooms()
@@ -704,8 +708,12 @@ class Easy:
             todo.insert(0, f"Intake is '{s.get('intake')}' with beds {beds} < prisoners {pris}: `intake beds` NOW so "
                            "only prisoners you can house arrive.")
         want_guards = max(3, pris // 6 + 2)
-        if staff.get("Guard", 0) < want_guards:
-            todo.append(f"Guards: have {staff.get('Guard', 0)}, want {want_guards}: `hire Guard {want_guards - staff.get('Guard', 0)}`.")
+        down = sit.get("staff_down") or {}
+        up = staff.get("Guard", 0) - down.get("Guard", 0)
+        if up < want_guards:
+            extra = f" ({down['Guard']} are DOWN - riot or fights; replace them now)" if down.get("Guard") else ""
+            todo.insert(0 if down.get("Guard", 0) * 2 >= staff.get("Guard", 1) else len(todo),
+                        f"Guards on their feet: {up}, want {want_guards}{extra}: `hire Guard {want_guards - up}`.")
         if not have.get("HoldingCell") and not have.get("Cell") and not have.get("Dormitory"):
             todo.append("A HoldingCell so arriving prisoners have somewhere to go: `room holding x1 y1 x2 y2` (about 9x8).")
         try:
