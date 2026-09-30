@@ -149,3 +149,18 @@ prisoners, holding cell empty, profit $16.9k/day, 0 escapes. The game's To-do pa
 exhaustion items. A standard kitchen (3 cookers + 2 fridges) measured exactly 50/50 on its own station.
 Fixed along the way: fence re-run no longer orders a second RoadGate (two had been installed; dismantled);
 `todo` hints follow the rooms that exist.
+
+## Follow-up 3 — 30 September 2026: DLL 0.4.0 live
+
+- regime: the schedule everyone follows is the **Normal** category (array index 2; others "Unspecified" follow it).
+  `regime balanced` wrote it; the game's clock panel switched to FreeTime and the save shows the new hours.
+- camera: `view x1 y1 x2 y2` moved the player's view and screenshotted the close-up.
+- rmcable / rmpipe: removed the dead road-light cable (131-137,10) and one sprinkler pipe; stations unaffected;
+  hookup re-laid the pipe.
+- finance ledger: `spend:-1` took $1 (negative = expense); hires now go through it and show in the day's profit.
+- Yard "Secure" check (flood fill from the yard to the map edge) found two 1-cell perimeter holes at x=138 beside
+  the road gates (left when a duplicate gate was dismantled); fenced.
+- Kitchen "Sink: Working Position Cannot be Reached": bottom-wall objects faced down into the wall. Layout now
+  faces them up; both kitchens fixed live, warning gone.
+- Order verification matches an object on the ordered footprint; a Bed ordered on a wall cell was installed across it
+  (the game accepted it) and `remove` dismantled it.

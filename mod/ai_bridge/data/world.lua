@@ -746,9 +746,11 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
 local function anchor_x(left, w) return left end
 local function anchor_y(top, h) return top + h - 1 end
 
-local function put(list, obj, left, top)
+-- face: "down" (default, 0,1) or "up" (0,-1). Things standing against the BOTTOM wall must face up,
+-- or their working position is inside the wall (live: kitchen "Sink: Working Position Cannot be Reached").
+local function put(list, obj, left, top, face)
     local s = SIZE[obj] or { 1, 1 }
-    list[#list + 1] = { obj, anchor_x(left, s[1]), anchor_y(top, s[2]) }
+    list[#list + 1] = { obj, anchor_x(left, s[1]), anchor_y(top, s[2]), face == "up" and -1 or 1 }
 end
 
 local LAYOUTS = {}
@@ -759,10 +761,10 @@ LAYOUTS.kitchen = function(x1, y1, x2, y2, out)
     local x = x1
     while x + 1 <= x2 and #out < 3 do put(out, "Cooker", x, y1); x = x + 2 end
     if y2 - y1 < 2 or x2 - x1 < 2 then error("a kitchen needs at least 3 x 3 cells inside", 0) end
-    put(out, "Sink", x1, y2)
+    put(out, "Sink", x1, y2, "up")
     x = x1 + 3
     local fridges = 0
-    while x + 1 <= x2 and fridges < 2 do put(out, "Fridge", x, y2); x = x + 2; fridges = fridges + 1 end
+    while x + 1 <= x2 and fridges < 2 do put(out, "Fridge", x, y2, "up"); x = x + 2; fridges = fridges + 1 end
     if y2 - y1 >= 3 then put(out, "Bin", x2, y1 + 2) end  -- trash goes out via bins (game: "not disposing of waste")
     put(out, "Sprinkler", x1, y1 + 1)  -- kitchens start fires; sprinklers cleared "not equipped to handle a fire"
     return "Kitchen: cookers on the top wall, a sink and fridges on the bottom wall. Cookers and fridges need power, " ..
@@ -888,7 +890,7 @@ function api.furnish(kind, x1, y1, x2, y2)
     local items = {}
     local note = layout(x1, y1, x2, y2, items)
     if #items == 0 then error("room is too small to furnish as " .. kind, 0) end
-    for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, 1) end
+    for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, it[4] or 1) end
     local placed = {}
     for _, it in ipairs(items) do placed[#placed + 1] = it[1] .. "@" .. it[2] .. "," .. it[3] end
     return { queued = #items, objects = placed, note = note }
@@ -949,7 +951,7 @@ local function room_row(x, y, count, cw, ch, door, zone, furnish, what)
         if furnish then
             local items = {}
             furnish(cx1, y + 1, cx1 + cw - 1, y2 - 1, items)
-            for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, 1) end
+            for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, it[4] or 1) end
         end
         local dx = cx1 + math.floor((cw - 1) / 2)
         door_gap(dx, y2)
@@ -1488,8 +1490,18 @@ local function activity_code(a)
     error("unknown activity '" .. tostring(a) .. "': use Sleep, Eat, Shower, Yard, FreeTime, Work or Lockup", 0)
 end
 
+-- The schedule everyone follows is the one category that is not all "Unspecified" (the others follow
+-- it). Measured live: it sits at index 2 of the game's category array, not at the save's first entry.
+local function base_category()
+    for c = 0, 7 do
+        local ok, r = pcall(native, "regime:" .. c)
+        if ok and r and string.find(r, "[^,]") and not string.match(r, "^Unspecified[Unspecified,]*$") then return c end
+    end
+    return 2
+end
+
 function api.regime(cat)
-    cat = num(cat or 0, "category")
+    cat = cat and num(cat, "category") or base_category()
     local names = split(native("regime:" .. cat), ",")
     for i, n in ipairs(names) do if n == "Nothing" then names[i] = "Lockup" end end
     local counts = {}
@@ -1497,13 +1509,14 @@ function api.regime(cat)
     local rows = {}
     for h = 0, 23 do rows[#rows + 1] = string.format("%02d %s", h, names[h + 1] or "?") end
     return { category = cat, hours = rows, totals = counts,
-             note = "Category 0 is the schedule everyone follows. Prisoners need Sleep ~8h, Eat 2-3x, Shower, " ..
+             note = "This is the schedule everyone follows. Prisoners need Sleep ~8h, Eat 2-3x, Shower, " ..
                     "Yard and FreeTime (Freedom need); Lockup keeps them in cells." }
 end
-doc("regime", "[category]", "The daily schedule, hour by hour (0 = everyone).", "api.regime()")
+doc("regime", "[category]", "The daily schedule, hour by hour (default: the one everyone follows).", "api.regime()")
 
 function api.set_regime(from, to, activity, cat)
-    from, to, cat = num(from, "from hour"), num(to or from, "to hour"), num(cat or 0, "category")
+    from, to = num(from, "from hour"), num(to or from, "to hour")
+    cat = cat and num(cat, "category") or base_category()
     if from < 0 or to > 23 or from > to then error("hours are 0..23, from <= to", 0) end
     local code = activity_code(activity)
     for h = from, to do native(string.format("setregime:%d %d %d", cat, h, code)) end
@@ -1523,8 +1536,9 @@ local REGIME_PRESETS = {
 function api.regime_preset(name)
     local p = REGIME_PRESETS[string.lower(tostring(name or "balanced"))]
     if not p then error("presets: balanced, work", 0) end
-    for h = 0, 23 do native(string.format("setregime:0 %d %d", h, activity_code(p[h + 1]))) end
-    return api.regime(0)
+    local cat = base_category()
+    for h = 0, 23 do native(string.format("setregime:%d %d %d", cat, h, activity_code(p[h + 1]))) end
+    return api.regime(cat)
 end
 doc("regime_preset", "[balanced|work]", "Replace the whole schedule with a preset that covers every need.",
     "api.regime_preset(\"balanced\")")
@@ -1745,7 +1759,13 @@ function api.hire(kind, count)
     for i = 1, count do
         if Object.Spawn(key, x + (i - 1) % 3, y + math.floor((i - 1) / 3)) then made = made + 1 end
     end
-    World.Balance = bal - s[1] * made
+    -- charge through the game's finance ledger (shows in the finance report; measured live: a negative
+    -- amount is an expense); without DLL 0.4 fall back to adjusting the balance directly
+    local charged = false
+    if NATIVE and made > 0 then
+        charged = pcall(native, "spend:" .. tostring(-s[1] * made) .. " staff_hire_" .. key)
+    end
+    if not charged then World.Balance = bal - s[1] * made end
     return { hired = made, type = key, cost = s[1] * made, money_left = math.floor(bal - s[1] * made),
              arrives_at = { x = math.floor(x), y = math.floor(y) },
              note = "They walk in from the road. Staff are paid daily wages by the game." }

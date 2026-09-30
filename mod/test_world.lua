@@ -114,6 +114,11 @@ for _, c in ipairs(calls) do if c[1] == "PlaceObject" and c[2] == "Door" then do
 assert(doors == 1)
 calls = {}
 r = call("furnish", "kitchen", 31, 31, 39, 36); assert(r.ok and r.result.queued >= 4, J.encode(r))
+for _, c in ipairs(calls) do
+    -- against the bottom wall: must face up (0,-1) or the working spot is in the wall (live bug)
+    if c[2] == "Sink" or (c[2] == "Fridge" and c[4] == 36) then assert(c[6] == -1, c[2] .. " must face up") end
+    if c[2] == "Cooker" then assert(c[6] == 1, "cookers on the top wall face down") end
+end
 calls = {}
 r = call("cell_block", 30, 40, 3); assert(r.ok and #r.result.cells == 3, J.encode(r))
 local beds, jd = 0, 0

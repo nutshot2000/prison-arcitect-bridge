@@ -78,6 +78,16 @@ class ReportTests(unittest.TestCase):
         self.assertIn("missing Bed", probs[0])
         self.assertIn("missing Toilet", probs[0])
 
+    def test_verify_orders(self):
+        from pa_agent.state.report import verify_orders
+        orders = [{"type": "Cooker", "x": 1, "y": 1, "t": 0},        # the cooker at 1.5,1.5 exists
+                  {"type": "Cooker", "x": 7, "y": 7, "t": 0},        # nothing there, ordered long ago
+                  {"type": "Toilet", "x": 3, "y": 3, "t": 990}]      # recent: still coming
+        v = verify_orders(self.root, orders, now=1000)
+        self.assertEqual(v["installed"], 1)
+        self.assertEqual(v["waiting"], 1)
+        self.assertEqual(v["failed"], ["Cooker@7,7"])
+
     def test_utility_map_marks(self):
         m = utility_map(self.root, 0, 0, 10, 10, "both")
         rows = m.splitlines()

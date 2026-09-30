@@ -231,7 +231,7 @@ ROOM_REQS: dict[str, dict] = {
     "Dormitory": {"min": (2, 3), "indoor": True, "objects": [("Bed", "BunkBed", "Mattress", "ComfyBed"), ("Toilet",)]},
     "Kitchen": {"objects": [("Cooker",), ("Fridge", "TallFridge"), ("Sink",)]},
     "Shower": {"objects": [("ShowerHead",)]},
-    "Yard": {"min": (5, 5)},
+    "Yard": {"min": (5, 5), "secure": True},   # "Secure (behind at least one door)" in the game's tooltip
     "Deliveries": {"min": (1, 3)},
     "Garbage": {"min": (1, 3)},
     "Office": {"min": (4, 4), "indoor": True,
@@ -249,6 +249,54 @@ ROOM_REQS: dict[str, dict] = {
 }
 
 
+DOOR_TYPES = {"Door", "JailDoor", "JailDoorLarge", "StaffDoor", "SolitaryDoor", "RemoteDoor", "RoadGate",
+              "DoorTimer"}
+
+
+def _blockers(root: Section) -> tuple[dict, set, int, int]:
+    """Cells that stop walking: walls/fences, and cells holding a door (RoadGate covers 7)."""
+    cells = _cells(root)
+    doors: set[tuple[int, int]] = set()
+    for o in _objects(root):
+        t = str(o.get("Type"))
+        if t in DOOR_TYPES:
+            x, y = o.num("Pos.x"), o.num("Pos.y")
+            if x is None or y is None:
+                continue
+            if t == "RoadGate":
+                for dx in range(-3, 4):
+                    doors.add((int(x - 0.5) + dx, int(y)))
+            else:
+                doors.add((int(x), int(y)))
+    w = int(root.num("NumCellsX", 0) or 0) or (max(p[0] for p in cells) + 1 if cells else 0)
+    h = int(root.num("NumCellsY", 0) or 0) or (max(p[1] for p in cells) + 1 if cells else 0)
+    return cells, doors, w, h
+
+
+def escape_route(root: Section, start: list[tuple[int, int]], cache: dict | None = None):
+    """Walk from `start` without crossing walls, fences or doors. Returns the first map-edge cell reached
+    (the area is NOT secure; that cell shows where the gap leads out), or None if it is secure."""
+    cells, doors, w, h = cache["b"] if cache and "b" in cache else _blockers(root)
+    if cache is not None:
+        cache["b"] = (cells, doors, w, h)
+
+    def blocked(p):
+        m = str(cells.get(p, {}).get("Mat", ""))
+        return "Wall" in m or m == "Fence" or p in doors
+
+    seen = set(start)
+    todo = list(start)
+    while todo:
+        x, y = todo.pop()
+        if x <= 0 or y <= 0 or x >= w - 1 or y >= h - 1:
+            return (x, y)
+        for q in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if q not in seen and not blocked(q):
+                seen.add(q)
+                todo.append(q)
+    return None
+
+
 def room_problems(root: Section) -> list[str]:
     """Check every room against ROOM_REQS using the save: size, indoor cells and required objects."""
     cells = _cells(root)
@@ -264,6 +312,7 @@ def room_problems(root: Section) -> list[str]:
         if p:
             by_cell[p].add(str(o.get("Type")))
     out = []
+    cache: dict = {}
     for rid, pts in sorted(members.items()):
         rtype = rtypes.get(rid, "?")
         req = ROOM_REQS.get(rtype)
@@ -279,6 +328,11 @@ def room_problems(root: Section) -> list[str]:
                 issues.append(f"too small ({w}x{h}, needs {mw}x{mh})")
         if req.get("indoor") and not all(_true(cells[p].get("Ind")) for p in pts):
             issues.append("not indoors (needs walls all round; `room` marks rooms indoor)")
+        if req.get("secure"):
+            exit_cell = escape_route(root, pts, cache)
+            if exit_cell:
+                issues.append(f"not secure: prisoners can walk out to the map edge near {exit_cell[0]},{exit_cell[1]} "
+                              "without passing a door (close the gap with fence/wall, or fence the yard with a door)")
         inside = set().union(*(by_cell.get(p, set()) for p in pts)) if pts else set()
         for group in req.get("objects", []):
             if not inside.intersection(group):
@@ -320,7 +374,9 @@ def verify_orders(root: Section, ordered: list[dict], now: float) -> dict[str, A
     result = {"installed": 0, "waiting": 0, "failed": []}
     for od in ordered:
         t, x, y = od["type"], od["x"], od["y"]
-        near = any(abs(px - (x + 0.5)) <= 3 and abs(py - (y + 0.5)) <= 3 for px, py in have.get(t, []))
+        # an object ordered at x covers x..x+w-1 (Pos = its centre), height-2 objects cover y-1..y:
+        # match only an object whose centre lies on that footprint, not a neighbour of the same type
+        near = any(-0.1 <= px - x <= 3.1 and -1.1 <= py - y <= 1.1 for px, py in have.get(t, []))
         if near:
             result["installed"] += 1
         elif queued_types.get(t) or now - od.get("t", now) < 360:
@@ -440,7 +496,7 @@ def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "
         for p, t in pipes.items():
             grid[p] = "L" if t == 1 else "s"
     power_users = {"Cooker", "Fridge", "Tv", "Light", "CctvMonitor", "LaundryMachine"}
-    water_users = {"Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine"}
+    water_users = {"Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine", "Sprinkler"}
     for o in _objects(root):
         t, p = o.get("Type"), _pos(o)
         if p is None:
