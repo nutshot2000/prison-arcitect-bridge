@@ -117,6 +117,7 @@ class Server:
         verb("pa_unlock", "unlock", "How to unlock something locked (Janitor, laundry, workshop, Doctor, Chief, cctv, "
              "grants...): the research chain and the steps still to do in order (research, hire the department head, "
              "their Office, then build/hire). Empty target lists the things.", {"target": STR}, [], ["target"])
+        verb("pa_letter", "letter", "Mark the CEO's letter as read (clears it from the game's To-do list).", {}, [], [])
         verb("pa_grants", "grants", "Every grant (government contract) with its advance, completion money and status "
              "(available, locked, accepted, completed).", {}, [], [])
         verb("pa_grant", "grant", "Accept a grant by name (from pa_grants, e.g. bootstraps): the advance is paid at once, "

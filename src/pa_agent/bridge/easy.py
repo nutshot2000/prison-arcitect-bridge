@@ -153,6 +153,7 @@ VERB_HELP = {
                "  head, give them an Office, then build/hire). Things: janitor laundry workshop library classroom\n"
                "  doctor foreman chief accountant psychologist cctv patrols metaldetector grants logistics, or a\n"
                "  research name. `unlock` alone lists them."),
+    "letter": ("letter", "Mark the CEO's letter as read (clears 'Read the CEO's letter' on the game's To-do list)."),
     "grants": ("grants", "Every grant (government contract): money now + money on completion, and whether it is\n"
                          "  available, locked (prerequisites), accepted or completed."),
     "grant": ("grant <name>", "Accept a grant, e.g. `grant bootstraps`. The advance is paid at once; the rest when its\n"
@@ -459,7 +460,7 @@ class Easy:
         if name:
             r = self.call("research", name)
             if r.get("status") == "started":
-                return f"started {r['research']} (${_n(r['cost'])}); the {r['researched_by']} works on it. {r['note']}"
+                return f"started {r['research']} (${_n(r['cost'])}); the {r['researched_by']} works on it. {r['note']}" + self.autosave()
             return f"{r['research']}: {r['status']}"
         r = self.call("research")
         groups: dict[str, list[str]] = {}
@@ -858,9 +859,22 @@ class Easy:
         lines.append("`grant <name>` accepts an available one (the advance is paid at once).")
         return "\n".join(lines)
 
+    def autosave(self) -> str:
+        """Save to agent_auto after money/progress actions: live, the game was once closed without saving
+        and the grants, research and CEO letter done since the last save were lost."""
+        try:
+            self.save("agent_auto")
+            return " (saved as agent_auto)"
+        except (BridgeError, EasyError):
+            return ""
+
     def v_grant(self, name: str) -> str:
         r = self.call("grant", name)
-        return f"accepted {r['accepted']}. {r['note']}"
+        return f"accepted {r['accepted']}. {r['note']}" + self.autosave()
+
+    def v_letter(self) -> str:
+        r = self.call("read_letter")
+        return r["note"] + self.autosave()
 
     def v_emergency(self, action: str = "status") -> str:
         r = self.call("emergency", action)
