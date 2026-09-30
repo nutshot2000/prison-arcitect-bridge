@@ -153,6 +153,13 @@ VERB_HELP = {
                "  head, give them an Office, then build/hire). Things: janitor laundry workshop library classroom\n"
                "  doctor foreman chief accountant psychologist cctv patrols metaldetector grants logistics, or a\n"
                "  research name. `unlock` alone lists them."),
+    "emergency": ("emergency <shakedown|tunnelsearch|drugbust|stop|bangup|lockdown|status>",
+                  "The game's Emergencies buttons. tunnelsearch finds and fills escape tunnels, shakedown finds\n"
+                  "  contraband, drugbust finds narcotics (one search at a time; `stop` ends it). bangup/lockdown\n"
+                  "  toggle: run the same command again to lift it."),
+    "search": ("search <x> <y> [radius]",
+               "Guards search the furniture around a cell (default radius 2): finds contraband and tunnel entrances\n"
+               "  (`report` lists TUNNEL entrances). A discovered tunnel is filled by workmen."),
     "lua": ("lua <code>", "Experts: run Lua in the game (`return` a value)."),
 }
 
@@ -774,6 +781,13 @@ class Easy:
             todo.append("A Warden unlocks research: `hire Warden`, then `room office ...` (6x6).")
         elif not have.get("Office"):
             todo.append("An Office for the Warden: `room office x1 y1 x2 y2` (6x6).")
+        for tn in (sit.get("tunnels") or [])[:2]:
+            if tn["entrances"]:
+                ex, ey = tn["entrances"][0]
+                todo.insert(0 if tn["outside_fence"] else len(todo),
+                            f"TUNNEL from {ex},{ey}" + (" to OUTSIDE the fence (prisoners escape through it)"
+                                                        if tn["outside_fence"] else "") +
+                            f": `emergency tunnelsearch` (whole prison) or `search {ex} {ey}`.")
         for r in [r for r in rooms if r["missing_something"]][:2]:
             todo.append(f"{r['type']} at {r['x1']},{r['y1']} is missing something (furniture not built yet? power? water?).")
         todo += self._needs_steps(sit, have, pris)
@@ -828,6 +842,15 @@ class Easy:
             if len(out) >= 2:
                 break
         return out
+
+    def v_emergency(self, action: str = "status") -> str:
+        r = self.call("emergency", action)
+        on = [k for k, v in r["state"].items() if v]
+        return f"{r['note']} Active now: {', '.join(on) if on else 'nothing'}."
+
+    def v_search(self, x: str, y: str, radius: str = "2") -> str:
+        r = self.call("search", *self._ints(x, y, radius))
+        return ("searching: " + ", ".join(r["searching"]) + ". " if r["searching"] else "") + r["note"]
 
     def v_lua(self, *code: str) -> str:
         import json

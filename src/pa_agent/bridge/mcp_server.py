@@ -117,6 +117,12 @@ class Server:
         verb("pa_unlock", "unlock", "How to unlock something locked (Janitor, laundry, workshop, Doctor, Chief, cctv, "
              "grants...): the research chain and the steps still to do in order (research, hire the department head, "
              "their Office, then build/hire). Empty target lists the things.", {"target": STR}, [], ["target"])
+        verb("pa_emergency", "emergency", "The game's Emergencies buttons: shakedown (contraband), tunnelsearch (finds "
+             "and fills escape tunnels), drugbust (narcotics), stop (ends the running search), bangup / lockdown "
+             "(toggle; call again to lift), status.", {"action": STR}, [], ["action"])
+        verb("pa_search", "search", "Guards search the furniture around a cell (default radius 2): finds contraband and "
+             "tunnel entrances (pa_report lists TUNNEL entrances); discovered tunnels get filled.",
+             {"x": INT, "y": INT, "radius": INT}, ["x", "y"], ["x", "y", "radius"])
         verb("pa_solitary", "solitary", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor "
              "below, (count*2+1) x 5 cells. Needed for punishments; without it the riot risk climbs.",
              {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"], ["x", "y", "count"])

@@ -129,6 +129,32 @@ END
         self.assertEqual(sum(a["cells"] for a in p["unreachable"]), 3)
         self.assertEqual(p["unreachable"][0], {"cells": 2, "x1": 7, "y1": 2, "x2": 8, "y2": 2})
 
+    def test_tunnels(self):
+        from pa_agent.state.report import tunnels
+        fence = "\n".join(f'    BEGIN "{x} 2" Mat Fence END' for x in range(2, 9)) + "\n" + \
+                "\n".join(f'    BEGIN "{x} 8" Mat Fence END' for x in range(2, 9))
+        save = f"""
+BEGIN Cells
+{fence}
+END
+BEGIN Tunnels
+    LastDigTime 1.0
+    BEGIN "5 5" Dug 1.0 Entrance true END
+    BEGIN "5 4" Dug 1.0 END
+    BEGIN "5 3" Dug 1.0 END
+    BEGIN "5 2" Dug 1.0 END
+    BEGIN "5 1" Dug 1.0 Entrance true Discovered true END
+    BEGIN "7 6" Dug 1.0 Entrance true END
+END
+"""
+        t = tunnels(parse_prison(save))
+        self.assertEqual(len(t), 2)
+        self.assertEqual(t[0]["cells"], 5)
+        self.assertTrue(t[0]["outside_fence"])     # reaches y=1, beyond the fence at y=2
+        self.assertTrue(t[0]["discovered"])
+        self.assertFalse(t[1]["outside_fence"])
+        self.assertEqual(t[1]["entrances"], [(7, 6)])
+
 
 if __name__ == "__main__":
     unittest.main()

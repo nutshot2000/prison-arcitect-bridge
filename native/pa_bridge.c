@@ -120,7 +120,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.4.0"
+#define BRIDGE_VERSION "0.5.0"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -439,6 +439,11 @@ static const sig_t NATIVE_SIGS[] = {
     {0x1403c17d0ULL, {0x48, 0x83, 0xEC, 0x28, 0x85, 0xD2, 0x78, 0x26, 0x45, 0x85}}, /* water cell accessor */
     {0x140769730ULL, {0x48, 0x89, 0x6C, 0x24, 0x20, 0x41, 0x54, 0x41, 0x56, 0x41}}, /* water neighbour update */
     {0x1405a0410ULL, {0x48, 0x83, 0xEC, 0x68, 0x48, 0xC7, 0x44, 0x24, 0x30, 0xFE}}, /* finance ledger */
+    {0x1405021f0ULL, {0x48, 0x8B, 0xC4, 0x44, 0x88, 0x40, 0x18, 0x48, 0x89, 0x48}}, /* contraband: start search */
+    {0x140503ec0ULL, {0x48, 0x89, 0x4C, 0x24, 0x08, 0x53, 0x55, 0x56, 0x57, 0x41}}, /* contraband: stop search */
+    {0x140502130ULL, {0x48, 0x83, 0xEC, 0x28, 0x80, 0x79, 0x63, 0x00, 0x74, 0x09}}, /* contraband: announce */
+    {0x1407c7c30ULL, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x80, 0xB9, 0xDC, 0x05}}, /* toggle bangup */
+    {0x1407c77e0ULL, {0x40, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x05, 0x13}}, /* toggle lockdown */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -756,6 +761,50 @@ static int native_spend(void *L, const char *s, size_t n) {
     return push_str(L, "ok");
 }
 
+/* ---- emergencies: the game's own button handler 0x1401f7b44 (switch on the button index) ----
+ * contraband manager = world+0x21a0; flags @+0x60 Shakedown, +0x61 TunnelSearch, +0x62 DrugBust.
+ * Shakedown: start(c,0,0); Tunnel Search: start(c,1,0); Narcotic Search: start(c,0,1); the handler
+ * then calls announce(c) (ShakedownStart sound). A running search is stopped with stop(c).
+ * Bangup: toggle(world) 0x1407c7c30 (regime flag world+0x5dc); Lockdown: toggle(world) 0x1407c77e0
+ * (world+0x4612). The handler's 0x1407d1ea0 call is analytics ("crisis") and is skipped. */
+typedef void (*search_start_t)(void *c, u8 tunnel, u8 drugs);
+typedef void (*this_fn_t)(void *p);
+static const search_start_t search_start = (search_start_t)0x1405021f0ULL;
+static const this_fn_t search_stop = (this_fn_t)0x140503ec0ULL;
+static const this_fn_t search_announce = (this_fn_t)0x140502130ULL;
+static const this_fn_t toggle_bangup = (this_fn_t)0x1407c7c30ULL;
+static const this_fn_t toggle_lockdown = (this_fn_t)0x1407c77e0ULL;
+
+static int native_emergency(void *L, const char *s, size_t n) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *c = w + 0x21a0;
+    int searching = c[0x60] || c[0x61] || c[0x62];
+    if (starts(s, n, "shakedown") || starts(s, n, "tunnelsearch") || starts(s, n, "drugbust")) {
+        if (searching) return push_str(L, "error: a search is already running (emergency:stopsearch first)");
+        search_start(c, (u8)starts(s, n, "tunnelsearch"), (u8)starts(s, n, "drugbust"));
+        search_announce(c);
+    } else if (starts(s, n, "stopsearch")) {
+        if (!searching) return push_str(L, "error: no search is running");
+        search_stop(c);
+        search_announce(c);
+    } else if (starts(s, n, "bangup")) {
+        toggle_bangup(w);
+    } else if (starts(s, n, "lockdown")) {
+        toggle_lockdown(w);
+    } else if (!starts(s, n, "status")) {
+        return push_str(L, "error: emergency:shakedown|tunnelsearch|drugbust|stopsearch|bangup|lockdown|status");
+    }
+    char out[160]; sbuf b = {out, 0, sizeof out};
+    sb_str(&b, "shakedown "); sb_str(&b, c[0x60] ? "1" : "0");
+    sb_str(&b, " tunnelsearch "); sb_str(&b, c[0x61] ? "1" : "0");
+    sb_str(&b, " drugbust "); sb_str(&b, c[0x62] ? "1" : "0");
+    sb_str(&b, " bangup "); sb_str(&b, w[0x5dc] ? "1" : "0");
+    sb_str(&b, " lockdown "); sb_str(&b, w[0x4612] ? "1" : "0");
+    sb_str(&b, " weaponsfree "); sb_str(&b, w[0x4614] ? "1" : "0");
+    return push_str(L, out);
+}
+
 /* ---- screenshots (read the last shown frame from inside the render loop) ---- */
 typedef void (__stdcall *glReadBuffer_t)(u32);
 typedef void (__stdcall *glReadPixels_t)(i32, i32, i32, i32, u32, u32, void *);
@@ -882,6 +931,7 @@ static int __cdecl bridge_debugout(void *L) {
         if (starts(s, n, "screenshot")) { g_shot_result[0] = 0; g_shot_pending = 1; return push_str(L, "queued"); }
         if (starts(s, n, "researchlist")) return native_researchlist(L);
         if (starts(s, n, "research:")) return native_research(L, s + 9, n - 9);
+        if (starts(s, n, "emergency:")) return native_emergency(L, s + 10, n - 10);
         return 0;
     }
     out_log(s, n);

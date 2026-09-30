@@ -250,6 +250,7 @@ r = call("overview"); assert(r.ok and #r.result.rows == 27 and #r.result.rows[1]
 ---------------------------------------------------------------------------
 local zoned, speed, saves, started = {}, 1, {}, {}
 local research = { Warden = 100, Health = 0, Maintainance = 0 }
+local emergency = { t = 0, b = 0 }
 World.GetCell = function(x, y)
     if x >= 0 and y >= 0 and x < W and y < H then
         return { CellX = x, CellY = y, Room = { i = zoned[x .. "," .. y] and 7 or -1 } }
@@ -278,6 +279,13 @@ Game.DebugOut = function(s, fn)
     local sp = string.match(s, "^setspeed:(.+)$"); if sp then speed = tonumber(sp); return "ok" end
     local sv = string.match(s, "^save:(.+)$"); if sv then saves[#saves + 1] = sv; return "queued" end
     if s == "saveresult" then return "ok C:/saves/" .. tostring(saves[#saves]) .. ".prison" end
+    local em = string.match(s, "^emergency:(%a+)$")
+    if em then
+        if em == "tunnelsearch" then emergency.t = 1 elseif em == "stopsearch" then emergency.t = 0 end
+        if em == "bangup" then emergency.b = 1 - emergency.b end
+        return "shakedown 0 tunnelsearch " .. emergency.t .. " drugbust 0 bangup " .. emergency.b ..
+               " lockdown 0 weaponsfree 0"
+    end
     if s == "researchlist" then
         local parts = {}
         for k, v in pairs(research) do parts[#parts + 1] = k .. ":" .. (started[k] and 1 or 0) .. ":" .. v end
@@ -401,6 +409,11 @@ r = call("room", "parole", 70, 60, 76, 66); assert(r.ok and r.result.room == "Pa
 r = call("room", "classroom", 80, 62, 88, 70); assert(not r.ok and string.find(r.error, "Education"), r.error)
 World.Balance = 100
 r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
+-- emergencies
+r = call("emergency", "tunnel search"); assert(r.ok and r.result.done == "tunnelsearch" and r.result.state.tunnelsearch, J.encode(r))
+r = call("emergency", "bangup"); assert(r.ok and r.result.state.bangup == true, J.encode(r))
+r = call("emergency", "stop"); assert(r.ok and r.result.state.tunnelsearch == false, J.encode(r))
+r = call("emergency", "riot police"); assert(not r.ok and string.find(r.error, "shakedown"), J.encode(r))
 -- a room behind a closed fence ring is refused (workmen could never reach it)
 for x = 55, 68 do built[x .. ",55"] = "Fence"; built[x .. ",68"] = "Fence" end
 for y = 55, 68 do built["55," .. y] = "Fence"; built["68," .. y] = "Fence" end

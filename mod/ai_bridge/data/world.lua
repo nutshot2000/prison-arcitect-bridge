@@ -1861,6 +1861,57 @@ function api.remove(object_type, x, y)
 end
 doc("remove", "type, x, y", "Dismantle the object of that type nearest to x,y (within 2 cells).", "api.remove(\"Bench\", 117, 41)")
 
+-- Search the furniture around a cell (the game's SearchObject job: a guard searches it). Tunnel
+-- entrances hide under beds/toilets; a search finds contraband and discovers the tunnel, which
+-- workmen then fill. Live day 28: a dormitory tunnel (entrance 107,18) led outside the fence.
+local SEARCHABLE = { "Bed", "BunkBed", "Toilet", "ShowerHead", "Bench", "Table", "Sink", "Drain", "Cooker",
+                     "Fridge", "WeightsBench", "PhoneBooth", "Tv", "SofaChairDouble", "Pews", "OfficeDesk",
+                     "FilingCabinet", "ServingTable", "VisitorTable", "Bin", "LaundryBasket", "MedicalBed" }
+function api.search(x, y, radius)
+    x, y = rect(x, y, x, y, "position")
+    radius = tonumber(radius) or 2
+    local found = {}
+    with_anchor(function(anchor, r)
+        for _, t in ipairs(SEARCHABLE) do
+            for o in pairs(Object.GetNearbyObjects(anchor, t, r) or {}) do
+                if o ~= anchor and math.abs(o.Pos.x - (x + 0.5)) <= radius + 0.6 and
+                   math.abs(o.Pos.y - (y + 0.5)) <= radius + 0.6 then
+                    WorkQueue.Request("SearchObject", o)
+                    found[#found + 1] = t .. "@" .. math.floor(o.Pos.x) .. "," .. math.floor(o.Pos.y)
+                end
+            end
+        end
+    end)
+    return { searching = found, note = #found == 0 and "nothing to search within " .. radius .. " cells" or
+             "Guards search these (SearchObject jobs); a tunnel under one gets discovered and filled." }
+end
+-- The Emergencies buttons (bridge DLL 0.5): the game's own handlers, found in the button switch.
+local EMERGENCY = { shakedown = "shakedown", tunnelsearch = "tunnelsearch", tunnels = "tunnelsearch",
+                    tunnel = "tunnelsearch", drugbust = "drugbust", narcoticsearch = "drugbust", drugs = "drugbust",
+                    stop = "stopsearch", stopsearch = "stopsearch", bangup = "bangup", lockdown = "lockdown",
+                    status = "status" }
+function api.emergency(action)
+    local key = EMERGENCY[string.lower(string.gsub(tostring(action or "status"), "[%s_%-]", ""))]
+    if not key then error("emergency: shakedown, tunnelsearch, drugbust, stop, bangup, lockdown or status", 0) end
+    local r = native("emergency:" .. key)
+    if type(r) ~= "string" then error("emergencies need bridge DLL 0.5 (scripts\\install_bridge.ps1 with the game closed)", 0) end
+    if string.sub(r, 1, 6) == "error:" then error(string.sub(r, 8), 0) end
+    local st = {}
+    for k, v in string.gmatch(r, "(%a+) (%d)") do st[k] = v == "1" end
+    return { done = key, state = st,
+             note = key == "tunnelsearch" and "Guards (and dogs) search the whole prison for tunnels; found ones get filled." or
+                    key == "shakedown" and "Guards search every cell and object for contraband." or
+                    key == "drugbust" and "Guards search for narcotics." or
+                    key == "bangup" and "Bangup toggled: prisoners are locked in their cells while it is on." or
+                    key == "lockdown" and "Lockdown toggled: everyone is locked in place while it is on." or
+                    key == "stopsearch" and "The running search was stopped." or "Current emergency state." }
+end
+doc("emergency", "action", "The game's Emergencies buttons: shakedown, tunnelsearch, drugbust, stop (a search), " ..
+    "bangup / lockdown (toggle), status.", "api.emergency(\"tunnelsearch\")")
+
+doc("search", "x, y, [radius]", "Guards search the furniture within radius (default 2) of a cell: finds contraband " ..
+    "and tunnel entrances.", "api.search(107, 18)")
+
 -- Replace walls/fences in a rectangle with floor (the work queue turns the cell into floor).
 function api.demolish(x1, y1, x2, y2, floor)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2, "area")

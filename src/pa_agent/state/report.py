@@ -167,7 +167,40 @@ def situation(root: Section) -> dict[str, Any]:
         "room_problems": room_problems(root),
         "money": money(root),
         "pending": pending_work(root),
+        "tunnels": tunnels(root),
     }
+
+
+def tunnels(root: Section) -> list[dict]:
+    """Escape tunnels from the save's Tunnels section ("x y" cells with Dug / Entrance / Discovered).
+    Live day 28: 9 escapes in a day through a tunnel from a dormitory (107,18) to 109,7, outside the fence."""
+    sec = root.section("Tunnels")
+    if not sec:
+        return []
+    cells: dict[tuple[int, int], Section] = {}
+    for c in sec.sections():
+        try:
+            x, y = (int(v) for v in c.name.split()[:2])
+        except ValueError:
+            continue
+        cells[(x, y)] = c
+    if not cells:
+        return []
+    fence = [p for p, c in _cells(root).items() if c.get("Mat") == "Fence"]
+    fx1, fy1 = (min(p[0] for p in fence), min(p[1] for p in fence)) if fence else (None, None)
+    fx2, fy2 = (max(p[0] for p in fence), max(p[1] for p in fence)) if fence else (None, None)
+    out = []
+    for a in _areas(list(cells)):
+        pts = [p for p in cells if a["x1"] <= p[0] <= a["x2"] and a["y1"] <= p[1] <= a["y2"]]
+        def out_of(p):
+            return bool(fence) and not (fx1 < p[0] < fx2 and fy1 < p[1] < fy2)
+        # the exit hole outside the fence is also marked Entrance: list the inside ones first
+        entrances = sorted((p for p in pts if _true(cells[p].get("Entrance"))), key=out_of)
+        outside = any(out_of(p) for p in pts)
+        out.append({"cells": a["cells"], "x1": a["x1"], "y1": a["y1"], "x2": a["x2"], "y2": a["y2"],
+                    "entrances": entrances, "discovered": any(_true(cells[p].get("Discovered")) for p in pts),
+                    "outside_fence": outside})
+    return out
 
 
 def situation_text(s: dict[str, Any]) -> str:
@@ -200,6 +233,12 @@ def situation_text(s: dict[str, Any]) -> str:
         lines.append(f"MISCONDUCT {fmt(s['misconduct'])}")
     if s["rooms_failing"]:
         lines.append(f"ROOMS MISSING SOMETHING: {', '.join(s['rooms_failing'])}")
+    for tn in s.get("tunnels") or []:
+        ent = " ".join(f"{x},{y}" for x, y in tn["entrances"]) or "?"
+        lines.append(f"TUNNEL {tn['cells']} cells x {tn['x1']}..{tn['x2']} y {tn['y1']}..{tn['y2']}, entrance {ent}"
+                     + (", REACHES OUTSIDE THE FENCE (escape route)" if tn["outside_fence"] else "")
+                     + ("" if tn["discovered"] else ", not discovered by the guards yet")
+                     + (f" -> `search {tn['entrances'][0][0]} {tn['entrances'][0][1]}`" if tn["entrances"] else ""))
     if s.get("todo"):
         lines.append("GAME TO-DO: " + " | ".join(s["todo"]))
     if s.get("money"):
@@ -221,6 +260,10 @@ def situation_text(s: dict[str, Any]) -> str:
         advice.append("Many prisoners are outside rooms: build a perimeter `fence`, more cells, more guards.")
     if s["staff_down"]:
         advice.append("Staff are down: hire more guards and a Doctor (Health research) before more intake.")
+    if s.get("tunnels"):
+        advice.append("Prisoners are digging tunnels: `emergency tunnelsearch` (or `search x y` at an entrance) so "
+                      "guards find and fill them; "
+                      "long term Dogs (`unlock doghandler`) and metal detectors (`unlock metaldetector`).")
     temp = s.get("temperature")
     if temp is not None and temp >= 80:
         advice.append(f"Prison temperature {temp:.0f}/100 = riot risk: more guards, fix the worst needs, "
