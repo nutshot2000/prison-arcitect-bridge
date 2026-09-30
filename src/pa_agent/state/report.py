@@ -107,6 +107,8 @@ def situation(root: Section) -> dict[str, Any]:
         if needs and needs.get("ComplainNeedId.i") is not None:
             complain[ids.get(needs.get("ComplainNeedId.i"), "?")] += 1
     worst = sorted(((sum(v) / len(v), k) for k, v in need_sum.items() if v), reverse=True)
+    hungry = sum(1 for v in need_sum.get("Food", []) if v >= 80)
+    tired_staff = sum(1 for o in objs if o.get("Type") in STAFF and o.num("Energy") is not None and o.num("Energy") < 15)
 
     staff = Counter()
     hurt, down = Counter(), Counter()
@@ -145,6 +147,8 @@ def situation(root: Section) -> dict[str, Any]:
     return {
         "prisoners": len(prisoners), "prisoners_where": dict(pris_where), "prisoners_without_cell": no_cell,
         "complaining_about": dict(complain.most_common(6)),
+        "hungry": hungry,
+        "tired_staff": tired_staff,
         "worst_needs": [(k, round(v)) for v, k in worst[:5]],
         "staff": dict(staff), "staff_hurt": dict(hurt), "staff_down": dict(down),
         "power_stations": stations, "pumps": pumps, "unpowered": dict(unpowered),
@@ -166,6 +170,8 @@ def situation_text(s: dict[str, Any]) -> str:
     lines = [f"PRISONERS {s['prisoners']}: where {fmt(s['prisoners_where'])}; without a cell {s['prisoners_without_cell']}"]
     if s["complaining_about"]:
         lines.append(f"  complaining about: {fmt(s['complaining_about'])}")
+    if s.get("hungry"):
+        lines.append(f"  hungry (Food need 80+): {s['hungry']} of {s['prisoners']}")
     if s["worst_needs"]:
         lines.append("  worst needs (avg 0-100, high = bad): " + ", ".join(f"{k} {v}" for k, v in s["worst_needs"]))
     lines.append(f"STAFF {fmt(s['staff'])}")

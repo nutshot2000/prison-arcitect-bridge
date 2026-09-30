@@ -642,6 +642,12 @@ class Easy:
             todo.append("A Kitchen: `room kitchen x1 y1 x2 y2` (9x8), then `hookup`.")
         if not have.get("Canteen"):
             todo.append("A Canteen next to the kitchen: `room canteen ...` (12x10).")
+        if sit.get("hungry", 0) > max(3, pris // 6):
+            todo.append(f"FOOD: {sit['hungry']} of {pris} prisoners are hungry. Build another `room kitchen` (9x8) "
+                        "with its own `station power` (a kitchen uses a whole station), `hire Cook 3`, and keep 3 Eat "
+                        "hours in the `regime`.")
+        if sit.get("tired_staff", 0) >= 3:
+            todo.append(f"{sit['tired_staff']} staff exhausted: another `room staffroom x1 y1 x2 y2` (8x7) helps.")
         # food scale (measured live: 2 cookers left 71 prisoners at ~1% meals): ~1 cooker and 1 cook per 10
         objs = Counter(str(o.get("Type")) for o in (root.section("Objects").items_indexed()
                                                     if root.section("Objects") else []))

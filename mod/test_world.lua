@@ -369,4 +369,36 @@ research.Health = 100
 r = call("hire", "doctor", 2); assert(r.ok and r.result.hired == 2 and r.result.type == "Doctor", J.encode(r))
 World.Balance = 100
 r = call("hire", "Guard", 1); assert(not r.ok and string.find(r.error, "costs"), r.error)
+---------------------------------------------------------------------------
+-- capacity-aware, island-aware, non-cross-wiring power hookup (fresh script, controlled world)
+---------------------------------------------------------------------------
+for i = #world_objects, 1, -1 do table.remove(world_objects, i) end
+-- station A (10..12, 10..12) is full; station B (40..42, 10..12) has room
+world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 11.5, y = 11.5 }, Switch = true, Demand = 48, Capacity = 50 }
+world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 41.5, y = 11.5 }, Switch = true, Demand = 10, Capacity = 50 }
+world_objects[#world_objects + 1] = { Type = "Cooker", Pos = { x = 15.5, y = 20.5 } }   -- nearer to A, A is full
+world_objects[#world_objects + 1] = { Type = "Tv", Pos = { x = 25.5, y = 30.5 } }      -- on an island (no station)
+assert(loadstring(src, "world.lua"))()
+api = PA_BRIDGE.api
+inbox, outbox = {}, {}
+Update(0.1)
+calls = {}
+local known = { "25,30", "25,31", "25,32" }                      -- island under the TV
+for x = 13, 20 do known[#known + 1] = x .. ",11" end          -- A's line east to x=20
+r = call("hookup", "power", known)
+assert(r.ok, r.error)
+local cab = {}
+for _, c in ipairs(calls) do if c[2] == "ElectricalCable" then cab[c[3] .. "," .. c[4]] = true end end
+assert(r.result.newly_connected == 2, "cooker (to B) and island TV connected: " .. J.encode(r))
+for k in pairs(cab) do
+    local x, y = string.match(k, "(%d+),(%d+)")
+    x, y = tonumber(x), tonumber(y)
+    assert(not (y >= 10 and y <= 12 and x >= 9 and x <= 21), "route touches full grid A at " .. k)
+end
+-- with B full too, the cooker is reported instead of wired
+world_objects[2].Demand = 50
+calls = {}
+assert(loadstring(src, "world.lua"))(); api = PA_BRIDGE.api; Update(0.1)
+r = call("hookup", "power", known)
+assert(r.ok and #r.result.not_connected >= 1 and string.find(r.result.note, "station power"), J.encode(r))
 print("world.lua tests passed")

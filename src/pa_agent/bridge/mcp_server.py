@@ -167,33 +167,15 @@ class Server:
             return st
 
         # ---- lower level, for experts -------------------------------------
-        @self.tool("pa_build_area", "Fill a rectangle with a material (ConcreteFloor, PavingStone, Building...).",
-                   _schema({"material": STR, **RECT}, ["material", *RECT]))
-        def _area(a):
-            return self._call("build_area", a["material"], a["x1"], a["y1"], a["x2"], a["y2"])
-
-        @self.tool("pa_build_walls", "Walls around the outline of a rectangle (BrickWall, ConcreteWall, Fence).",
-                   _schema({"material": STR, **RECT}, ["material", *RECT]))
-        def _walls(a):
-            return self._call("build_wall_rect", a["material"], a["x1"], a["y1"], a["x2"], a["y2"])
-
-        @self.tool("pa_build_line", "A straight horizontal or vertical line of a material (wall, fence, road).",
-                   _schema({"material": STR, **RECT}, ["material", *RECT]))
-        def _line(a):
-            return self._call("build_line", a["material"], a["x1"], a["y1"], a["x2"], a["y2"])
-
         @self.tool("pa_place_object", "Buy and install one object (Bed, Toilet, JailDoor, Door, Cooker, PowerStation, "
                    "WaterPumpStation, Capacitor, ElectricalCable, PipeLarge, PipeSmall...). ox,oy = facing, default 0,1.",
                    _schema({"object": STR, "x": INT, "y": INT, "ox": INT, "oy": INT}, ["object", "x", "y"]))
         def _place(a):
             return self._call("place_object", a["object"], a["x"], a["y"], a.get("ox", 0), a.get("oy", 1))
 
-        @self.tool("pa_objects", "List every object/person of a type with positions (Workman, Prisoner, Guard, Bed...).",
-                   _schema({"type": STR, "limit": INT}, ["type"]))
-        def _objects(a):
-            return self._call("objects", a["type"], a.get("limit", 200))
-
-        @self.tool("pa_api", "Call any api.* helper by name with a list of arguments (api.help() lists them).",
+        @self.tool("pa_api", "Experts: call any api.* helper by name with a list of arguments, e.g. build_area "
+                   "[material,x1,y1,x2,y2], build_wall_rect, build_line, objects [type], count [[types]], demolish, "
+                   "look_at, set_regime. pa_help lists the easy verbs; api.help() via pa_lua lists everything.",
                    _schema({"fn": STR, "args": {"type": "array"}}, ["fn"]))
         def _api(a):
             return self._call(a["fn"], *(a.get("args") or []))

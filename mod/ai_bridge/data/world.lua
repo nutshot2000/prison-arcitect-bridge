@@ -890,7 +890,13 @@ function api.furnish(kind, x1, y1, x2, y2)
     local items = {}
     local note = layout(x1, y1, x2, y2, items)
     if #items == 0 then error("room is too small to furnish as " .. kind, 0) end
-    for _, it in ipairs(items) do req("PlaceObject", it[1], it[2], it[3], 0, it[4] or 1) end
+    for _, it in ipairs(items) do
+        -- general rule: a 1-high object on the bottom row faces up, away from the wall (its working
+        -- spot is in front of it; live bug: "Working Position Cannot be Reached")
+        local s = SIZE[it[1]] or { 1, 1 }
+        if it[4] == nil and it[3] == y2 and y2 > y1 and s[2] == 1 then it[4] = -1 end
+        req("PlaceObject", it[1], it[2], it[3], 0, it[4] or 1)
+    end
     local placed = {}
     for _, it in ipairs(items) do placed[#placed + 1] = it[1] .. "@" .. it[2] .. "," .. it[3] end
     return { queued = #items, objects = placed, note = note }
@@ -1239,6 +1245,17 @@ function api.hookup(kind, known)
         return { power = p, water = w }
     end
     if not NEEDS[kind] then error("kind must be \"power\", \"water\" or \"both\"", 0) end
+    -- Without the existing lines (read from a save by the easy `hookup`) every built object looks
+    -- unconnected and whole networks get re-bought and cross-wired (live: 118 cables, 4 stations tripped).
+    if (type(known) ~= "table" or #known == 0) and next(PLANNED_UTIL[kind]) == nil then
+        local okc, st = pcall(api.count, STATION[kind])
+        local stations = 0
+        if okc then for _, v in pairs(st) do stations = stations + v end end
+        if stations > 0 then
+            error("hookup needs the cells that already carry " .. kind .. " (use the easy `hookup` verb / pa_hookup, " ..
+                  "which reads them from a save); running blind would re-lay and cross-wire existing lines", 0)
+        end
+    end
     -- the network: stations (built or ordered) plus every cable/pipe ordered through this API
     local net, netlist = {}, {}
     local function add(x, y) local k = x .. "," .. y; if not net[k] then net[k] = true; netlist[#netlist + 1] = { x, y } end end
@@ -1292,27 +1309,120 @@ function api.hookup(kind, known)
     end
     for _, u in ipairs(users) do u[4] = dist(u) end
     table.sort(users, function(a, b) return a[4] < b[4] end)
-    local laid, joined = 0, 0
-    for _, u in ipairs(users) do
-        if not net[u[1] .. "," .. u[2]] then
-            local best, bd
-            for _, c in ipairs(netlist) do
-                local d = math.abs(c[1] - u[1]) + math.abs(c[2] - u[2])
-                if not bd or d < bd then best, bd = c, d end
+    -- Power only: split the network into separate grids and track each grid's spare capacity, so a new
+    -- user is never wired onto a grid whose station is full (live: a staff room tripped a kitchen's station).
+    local comp, headroom = {}, {}
+    local function flood(k0, id)
+        local stack = { k0 }
+        comp[k0] = id
+        while #stack > 0 do
+            local k = table.remove(stack)
+            local x, y = string.match(k, "(-?%d+),(-?%d+)")
+            x, y = tonumber(x), tonumber(y)
+            for _, n in ipairs({ (x + 1) .. "," .. y, (x - 1) .. "," .. y, x .. "," .. (y + 1), x .. "," .. (y - 1) }) do
+                if net[n] and not comp[n] then comp[n] = id; stack[#stack + 1] = n end
             end
-            local path = lpath(u[1], u[2], best[1], best[2])
-            table.remove(path)  -- the last cell is already part of the network
-            -- reverse so the end under the object is last (small pipe there)
-            local rev = {}
-            for i = #path, 1, -1 do rev[#rev + 1] = path[i] end
-            laid = laid + lay(kind, rev, seen)
-            for _, c in ipairs(rev) do add(c[1], c[2]) end
-            joined = joined + 1
         end
     end
+    local LOAD = { Cooker = 12, Fridge = 5, WaterPumpStation = 20, LaundryMachine = 10, Tv = 3, LargeTv = 4 }
+    local short = {}
+    -- grids that actually have a source (station / pump); a line cut off from its source is an island
+    -- (live: a staff room kept its cable after the link was cut and looked "connected")
+    local has_source = {}
+    local nid = 0
+    for _, c in ipairs(netlist) do
+        local k = c[1] .. "," .. c[2]
+        if not comp[k] then nid = nid + 1; flood(k, nid) end
+    end
+    for _, c in ipairs(object_cells(STATION[kind])) do
+        local id = comp[c[1] .. "," .. c[2]]
+        if id then has_source[id] = true end
+    end
+    for _, o in ipairs(PLANNED_OBJECTS) do
+        for _, st in ipairs(STATION[kind]) do
+            if o[1] == st then local id = comp[o[2] .. "," .. o[3]]; if id then has_source[id] = true end end
+        end
+    end
+    if kind == "power" then
+        local util = select(2, pcall(api.utilities)) or {}
+        for id = 1, nid do headroom[id] = 0 end
+        local built = {}
+        for _, st in ipairs(type(util) == "table" and util.power_stations or {}) do
+            local id = comp[st.x .. "," .. st.y]
+            if id then built[id] = true end
+            if id and st.on ~= false then headroom[id] = (headroom[id] or 0) + (st.capacity or 50) - (st.demand or 0) end
+        end
+        -- a station that is ordered but not built yet brings 50, minus what is already wired to it
+        local planned_only = {}
+        for _, o in ipairs(PLANNED_OBJECTS) do
+            if o[1] == "PowerStation" then
+                local id = comp[o[2] .. "," .. o[3]]
+                if id and not built[id] then headroom[id] = (headroom[id] or 0) + 50; built[id] = true; planned_only[id] = true end
+            end
+        end
+        for _, u in ipairs(users) do
+            local id = comp[u[1] .. "," .. u[2]]
+            if id and planned_only[id] then headroom[id] = headroom[id] - (LOAD[u[3]] or 2) end
+        end
+    end
+    local laid, joined = 0, 0
+    for _, u in ipairs(users) do
+        local uk = u[1] .. "," .. u[2]
+        if not (net[uk] and has_source[comp[uk]]) then
+            local need = kind == "power" and (LOAD[u[3]] or 2) or 0
+            -- candidates: cells of grids with a source and (power) spare capacity, nearest first
+            local cands = {}
+            for _, c in ipairs(netlist) do
+                local id = comp[c[1] .. "," .. c[2]]
+                if id and has_source[id] and (kind ~= "power" or (headroom[id] or 0) >= need) then
+                    cands[#cands + 1] = { c, math.abs(c[1] - u[1]) + math.abs(c[2] - u[2]), id }
+                end
+            end
+            table.sort(cands, function(a, b) return a[2] < b[2] end)
+            -- a route must not run on or next to another grid's line: that would join two grids and
+            -- two stations on one grid switch each other off. Try x-then-y and y-then-x.
+            local function clean(path, id)
+                for i, c in ipairs(path) do
+                    for _, n in ipairs({ { 0, 0 }, { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+                        local o = comp[(c[1] + n[1]) .. "," .. (c[2] + n[2])]
+                        if kind == "power" and o and o ~= id and has_source[o] then return false end
+                    end
+                end
+                return true
+            end
+            local best, path, id
+            for i = 1, math.min(#cands, 40) do
+                local c = cands[i]
+                for _, p in ipairs({ lpath(u[1], u[2], c[1][1], c[1][2]), (function()
+                    local q = lpath(c[1][1], c[1][2], u[1], u[2]); local r = {}
+                    for j = #q, 1, -1 do r[#r + 1] = q[j] end; return r end)() }) do
+                    if clean(p, c[3]) then best, path, id = c[1], p, c[3]; break end
+                end
+                if best then break end
+            end
+            if not best then
+                short[#short + 1] = u[3] .. "@" .. u[1] .. "," .. u[2]
+            else
+                table.remove(path)  -- the last cell is already part of the network
+                -- reverse so the end under the object is last (small pipe there)
+                local rev = {}
+                for i = #path, 1, -1 do rev[#rev + 1] = path[i] end
+                laid = laid + lay(kind, rev, seen)
+                for _, c in ipairs(rev) do add(c[1], c[2]); if id then comp[c[1] .. "," .. c[2]] = id end end
+                if id then comp[uk] = id end
+                if id then headroom[id] = (headroom[id] or 0) - need end
+                joined = joined + 1
+            end
+        end
+    end
+    local note = "Workmen lay " .. (kind == "power" and "cable" or "pipes") .. " over time. Run hookup again after " ..
+                 "adding rooms. Kitchens (cookers, fridges) need power; toilets, showers and sinks need water."
+    if #short > 0 then
+        note = "NOT connected (every grid near them is full; each station feeds 50): " .. table.concat(short, ", ") ..
+               ". Put a `station power` near them (not touching another station), then hookup again. " .. note
+    end
     return { kind = kind, objects_needing_it = #users, newly_connected = joined, pieces_ordered = laid,
-             note = "Workmen lay " .. (kind == "power" and "cable" or "pipes") .. " over time. Run hookup again after " ..
-                    "adding rooms. Kitchens (cookers, fridges) need power; toilets, showers and sinks need water." }
+             not_connected = short, note = note }
 end
 doc("hookup", "[power|water|both]", "Connect every object that needs power/water to the nearest cable/pipe or station. " ..
     "Needs a PowerStation / WaterPumpStation first.", "api.hookup(\"both\")")

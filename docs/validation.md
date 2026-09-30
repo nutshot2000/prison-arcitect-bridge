@@ -164,3 +164,20 @@ Fixed along the way: fence re-run no longer orders a second RoadGate (two had be
   faces them up; both kitchens fixed live, warning gone.
 - Order verification matches an object on the ordered footprint; a Bed ordered on a wall cell was installed across it
   (the game accepted it) and `remove` dismantled it.
+
+## Follow-up 4 — 30 September 2026: power hookup that cannot trip stations
+
+- Incident: a raw `api.hookup("power", {})` (no known cells) could not see the existing network and ordered 118
+  cables, joining four grids; four stations tripped (`Overloaded 2`). Recovered by pausing, saving before and after
+  the cables were laid, diffing the two saves (86 new cells), `rmcable` on each and `power on`. The raw call now
+  refuses an empty cell list when stations exist.
+- `hookup` now floods the network into grids, marks the grids that hold a station (or a planned one), computes each
+  grid's headroom (50 minus the connected users' load) and only wires a user to a grid with a source and room for
+  it. Routes are tried both ways round (x-then-y, y-then-x) and rejected if any cell touches another sourced grid.
+  A user on a cable island (line cut from its station) counts as unconnected.
+- Live: the second staff room (TV 71,71, DrinkMachine 76,71) had been cut off from kitchen2's full station (50/50).
+  `hookup power` ordered 49 cables along y=71 and up x=93 to the station at 94,42 (40 → 41/50); every station stayed
+  ON, the TV reads powered and the report shows nothing without power. Offline test covers a full near grid, a far
+  grid with room, an island and the both-full case.
+- Other fixes since 83e7323: bottom-wall objects face up; the MCP tool list trimmed to the easy verbs + `pa_api`;
+  the report counts hungry prisoners and tired staff.

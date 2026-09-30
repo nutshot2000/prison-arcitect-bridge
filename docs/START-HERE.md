@@ -84,7 +84,11 @@ Out of space? Move the fence out (`fence` with the bigger rectangle) and pave th
 5. **Never cable the road's street lights.** The map powers them itself (`ExternalPower`). `hookup` skips them now.
    Wiring them into your grid overloaded every station in the test prison.
 6. **Toilets, showers and sinks need water; cookers, fridges, TVs and lights need power.** Run `hookup` after every
-   new room. It reuses cable and pipe already in the ground.
+   new room. It reuses cable and pipe already in the ground, only wires power users to a grid that has a station
+   with spare capacity, and never routes a cable next to another grid's line (that would join two stations). What it
+   cannot connect safely is listed as `not connected`: add a station (`station`) and run `hookup` again.
+   Never call the raw `api.hookup("power", {})` with an empty cell list: it cannot see existing cable and lays a
+   second network over the first (the play verb passes the cells from the save; the raw call now refuses).
 7. **Rooms are zoned by `room` and `cells`.** `zone` on an unfinished `Building` foundation does nothing: build
    walls + floor (the bridge marks them indoors) instead. Never order the UI tool names `Building`, `Demolish`,
    `CancelJobs` as materials: the game builds them as junk floor. The API refuses them now.
@@ -97,6 +101,8 @@ Out of space? Move the fence out (`fence` with the bigger rectangle) and pave th
 11. **The game's To-do items and their fixes** (`todo`): "not efficiently disposing of waste" → Bins (rooms place
     them now); "not equipped to handle a fire" → Sprinklers on water (kitchens/canteens get one); "staff exhausted" →
     a Staffroom WITH a DrinkMachine; long Solitary queue → `solitary`; families waiting → `room visitation`.
+12. **Objects on a room's bottom wall face up.** A sink or fridge facing into the wall shows "Working Position
+    Cannot be Reached" and is never used. `room` does this; if you `place` by hand, pass the facing.
 
 ## When something fails
 
