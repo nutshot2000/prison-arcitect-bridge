@@ -778,7 +778,7 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
                PoolTable = { 3, 2 }, LargeTv = { 2, 1 }, LaundryMachine = { 1, 1 }, LaundryBasket = { 1, 1 },
                IroningBoard = { 3, 1 }, SchoolDesk = { 1, 2 }, LibraryBookshelf = { 3, 1 },
                SortingTable = { 3, 1 }, WorkshopSaw = { 3, 1 }, WorkshopPress = { 3, 1 },
-               SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 } }
+               SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 }, MorgueSlab = { 1, 2 } }
 
 -- PlaceObject anchor for a footprint whose left/top cell is given (facing down, 0,1).
 -- Measured live 29 Sep 2026 (object Pos after install): an object ordered at x covers
@@ -815,6 +815,8 @@ end
 LAYOUTS.canteen = function(x1, y1, x2, y2, out)
     -- rows of Table with a Bench above and below; serving table at the top.
     if x2 - x1 + 1 >= 5 then put(out, "ServingTable", x1, y1) end
+    -- one serving table fed ~25 at day 27 (3 tables, 79 prisoners, half hungry): wide canteens get two
+    if x2 - x1 + 1 >= 11 then put(out, "ServingTable", x1 + 6, y1) end
     local y = y1 + 2
     while y + 2 <= y2 do
         local x = x1
@@ -981,6 +983,14 @@ LAYOUTS.library = function(x1, y1, x2, y2, out)
     return "Library: bookshelves and a sorting table. Prisoners relax and read here."
 end
 
+-- Morgue (Health): MorgueSlabs (1x2, against a wall). Without one, dead bodies lie where they fell
+-- (live day 27: 17 bodies after a riot).
+LAYOUTS.morgue = function(x1, y1, x2, y2, out)
+    need_inside("morgue", x1, y1, x2, y2, 3, 3)
+    for x = x1, x2, 2 do put(out, "MorgueSlab", x, y1) end
+    return "Morgue: slabs for the dead (Doctors/Workmen carry bodies here, then a hearse collects them)."
+end
+
 -- Rooms that need no furniture: just the zone (they still need a floor, and
 -- Deliveries/Garbage/Storage work best next to the road).
 local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put it next to the road.",
@@ -995,10 +1005,10 @@ local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower",
                     infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage",
                     dormitory = "Dormitory", visitation = "Visitation", chapel = "Chapel", commonroom = "CommonRoom",
                     parole = "ParoleRoom", laundry = "Laundry", classroom = "Classroom", workshop = "Workshop",
-                    library = "Library", cleaning = "CleaningCupboard" }
+                    library = "Library", cleaning = "CleaningCupboard", morgue = "Morgue" }
 -- research the game needs before the room (or its furniture) can be built
 local ROOM_RESEARCH = { laundry = "PrisonLabour", workshop = "PrisonLabour", library = "PrisonLabour",
-                        classroom = "Education", cleaning = "Cleaning", infirmary = "Health" }
+                        classroom = "Education", cleaning = "Cleaning", infirmary = "Health", morgue = "Health" }
 
 local function kind_names()
     local names = {}
@@ -1070,7 +1080,7 @@ end
 doc("room", "kind, x1, y1, x2, y2, [door_side]",
     "EASIEST: build a whole room in one call: walls + floor + door + furniture + zone. kind: kitchen, canteen, shower, " ..
     "yard, holding, cell, office, staffroom, infirmary, deliveries, garbage, storage, chapel, commonroom, parole, " ..
-    "laundry, classroom, workshop, library, cleaning. The rectangle includes the walls.",
+    "laundry, classroom, workshop, library, cleaning, morgue. The rectangle includes the walls.",
     "api.room(\"kitchen\", 60, 30, 70, 38, \"south\")")
 
 -- A row of cells facing south onto a corridor. Each cell is 3 wide x 3 deep inside.

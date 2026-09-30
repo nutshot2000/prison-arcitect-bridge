@@ -87,7 +87,7 @@ VERB_HELP = {
     "room": ("room <kind> <x1> <y1> <x2> <y2> [door_side]",
              "Build a whole room: walls + floor + door + furniture + zone. The rectangle INCLUDES the walls.\n"
              "  kinds: holding kitchen canteen shower yard office staffroom infirmary dormitory visitation storage\n"
-             "         deliveries garbage chapel commonroom parole laundry classroom workshop library cleaning\n"
+             "         deliveries garbage chapel commonroom parole laundry classroom workshop library cleaning morgue\n"
              "  (laundry/workshop/library need PrisonLabour, classroom Education, cleaning Cleaning: `unlock <kind>`)\n"
              "  door_side: north south east west (default south). Yards/deliveries/garbage have no walls.\n"
              "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6,\n"

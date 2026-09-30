@@ -262,6 +262,7 @@ ROOM_REQS: dict[str, dict] = {
     "Chapel": {"min": (6, 6), "indoor": True, "objects": [("Altar",), ("Pews",), ("PrayerMat",)]},
     "ParoleRoom": {"min": (5, 5), "indoor": True, "objects": [("VisitorTable",)]},
     "CommonRoom": {"indoor": True},
+    "Morgue": {"indoor": True, "objects": [("MorgueSlab",)]},
 }
 
 
