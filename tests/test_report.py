@@ -158,3 +158,59 @@ END
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GRID_SAVE = """
+BEGIN Objects
+    Size 6
+    BEGIN "[i 0]" Id.i 0 Type PowerStation Pos.x 11.5 Pos.y 11.5 Switch false Overloaded 1 Demand 0 Capacity 50 END
+    BEGIN "[i 1]" Id.i 1 Type WaterPumpStation Pos.x 11.5 Pos.y 21.5 END
+    BEGIN "[i 2]" Id.i 2 Type Cooker Pos.x 17.0 Pos.y 11.5 END
+    BEGIN "[i 3]" Id.i 3 Type Cooker Pos.x 20.0 Pos.y 11.5 END
+    BEGIN "[i 4]" Id.i 4 Type Fridge Pos.x 30.0 Pos.y 30.5 END
+    BEGIN "[i 5]" Id.i 5 Type PowerStation Pos.x 41.5 Pos.y 11.5 Switch true Demand 0 Capacity 50 END
+END
+BEGIN Electricity
+    BEGIN "13 11 1" END
+    BEGIN "14 11 1" END
+    BEGIN "15 11 1" END
+    BEGIN "16 11 1" END
+    BEGIN "11 13 1" END
+    BEGIN "11 14 1" END
+    BEGIN "11 15 1" END
+    BEGIN "11 16 1" END
+    BEGIN "11 17 1" END
+    BEGIN "11 18 1" END
+    BEGIN "11 19 1" END
+    BEGIN "11 20 1" END
+END
+"""
+
+
+class GridLoadTests(unittest.TestCase):
+    def test_tripped_station_shows_what_is_wired_to_it(self):
+        from pa_agent.state.report import grid_loads
+        g = {s["at"]: s for s in grid_loads(parse_prison(GRID_SAVE))}
+        a = g[(11, 11)]
+        # pump via the line south; the cable ends at x=16, under the 2-wide cooker at 16..17 but not the one
+        # at 19..20; the fridge is not on any cable
+        self.assertEqual(a["objects"], {"WaterPumpStation": 1, "Cooker": 1})
+        self.assertEqual(a["estimated_load"], 25 + 12)
+        self.assertFalse(a["on"])
+        self.assertEqual(a["shared_with"], [])
+        self.assertEqual(g[(41, 11)]["estimated_load"], 0)
+
+    def test_stations_and_gates_are_not_reported_as_never_built(self):
+        from pa_agent.state.report import verify_orders
+        save = parse_prison("""
+BEGIN Objects
+    Size 2
+    BEGIN "[i 0]" Id.i 0 Type PowerStation Pos.x 131.5 Pos.y 31.5 END
+    BEGIN "[i 1]" Id.i 1 Type RoadGate Pos.x 141.5 Pos.y 4.5 END
+END
+""")
+        v = verify_orders(save, [{"type": "PowerStation", "x": 130, "y": 30, "t": 0},
+                                 {"type": "RoadGate", "x": 138, "y": 4, "t": 0},
+                                 {"type": "PowerStation", "x": 100, "y": 30, "t": 0}], now=10000)
+        self.assertEqual(v["installed"], 2)
+        self.assertEqual(v["failed"], ["PowerStation@100,30"])

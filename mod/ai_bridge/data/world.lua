@@ -576,12 +576,30 @@ doc("find_space", "w, h, [near_x, near_y, margin]", "Find an empty w x h area of
     "api.find_space(12, 8, 70, 40)")
 
 -- ---- construction -----------------------------------------------------------
+-- A fence ordered over a solid wall (built or ordered) replaces it, and the room behind loses that wall
+-- (live 2 Oct 2026: a fence line round Deliveries ran along a shower's east wall and turned it into fence).
+-- A wall already keeps prisoners in, so such cells are left as they are.
+local function keeps_wall(m, x, y)
+    if m ~= "Fence" then return false end
+    local have = planned_at(x, y) or Object.GetMaterial(x, y) or ""
+    return WALLS[have] ~= nil and have ~= "Fence"
+end
+
 function api.build_area(material, x1, y1, x2, y2)
     local m, hint = check_material(material)
     x1, y1, x2, y2 = rect(x1, y1, x2, y2)
-    local n = 0
-    for x = x1, x2 do for y = y1, y2 do req("Construction", m, x, y); n = n + 1 end end
-    return { queued = n, material = m, hint = hint }
+    local n, kept = 0, {}
+    for x = x1, x2 do for y = y1, y2 do
+        if keeps_wall(m, x, y) then kept[#kept + 1] = x .. "," .. y
+        else req("Construction", m, x, y); n = n + 1 end
+    end end
+    local out = { queued = n, material = m, hint = hint }
+    if #kept > 0 then
+        out.kept_walls = #kept
+        out.note = #kept .. " cell(s) already had a wall and were left alone (a fence would replace the wall " ..
+                   "of the room behind it): " .. table.concat(kept, " ", 1, math.min(#kept, 8))
+    end
+    return out
 end
 doc("build_area", "material, x1, y1, x2, y2", "Fill a rectangle with a floor/material (ConcreteFloor, PavingStone, ConcreteTiles...).",
     "api.build_area(\"ConcreteFloor\", 10, 10, 20, 15)")
@@ -768,14 +786,14 @@ function api.perimeter(x1, y1, x2, y2, material)
             end
         end
         for fx = x1, x2 do
-            if not gate_at[fx] then req("Construction", material, fx, y); fence = fence + 1 end
+            if not gate_at[fx] and not keeps_wall(material, fx, y) then req("Construction", material, fx, y); fence = fence + 1 end
         end
     end
     side(y1); side(y2)
     for y = y1 + 1, y2 - 1 do
         for _, x in ipairs({ x1, x2 }) do
             if is_road(x, y) then error("the fence runs along the road at x=" .. x .. "; move that side off the road", 0) end
-            req("Construction", material, x, y); fence = fence + 1
+            if not keeps_wall(material, x, y) then req("Construction", material, x, y); fence = fence + 1 end
         end
     end
     return { fence_cells = fence, road_gates = gates, cost_estimate = fence * 20 + #gates * 1000,
@@ -798,7 +816,9 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
                PoolTable = { 3, 2 }, LargeTv = { 2, 1 }, LaundryMachine = { 1, 1 }, LaundryBasket = { 1, 1 },
                IroningBoard = { 3, 1 }, SchoolDesk = { 1, 2 }, LibraryBookshelf = { 3, 1 },
                SortingTable = { 3, 1 }, WorkshopSaw = { 3, 1 }, WorkshopPress = { 3, 1 },
-               SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 }, MorgueSlab = { 1, 2 } }
+               SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 }, MorgueSlab = { 1, 2 },
+               -- from installed Pos (2 Oct 2026): monitor ordered at 121 -> Pos.x 122.5 = cells 121..123
+               CctvMonitor = { 3, 1 }, Cctv = { 1, 1 } }
 
 -- PlaceObject anchor for a footprint whose left/top cell is given (facing down, 0,1).
 -- Measured live 29 Sep 2026 (object Pos after install): an object ordered at x covers
@@ -1339,6 +1359,31 @@ local function object_cells(types)
     return out
 end
 
+-- Existing objects of the given types with every cell they cover. A cable under ANY of an object's cells
+-- powers it (live: one cooker's cable ran under the next cooker, which got power without being counted,
+-- and the kitchen's station tripped). Pos is the centre: a w-wide object covers cx-w/2 .. cx+w/2-1.
+local function object_feet(types)
+    local out = {}
+    with_anchor(function(anchor, radius)
+        for _, t in ipairs(types) do
+            local s = SIZE3[t] and { 3, 3 } or SIZE[t] or { 1, 1 }
+            local okn, near = pcall(Object.GetNearbyObjects, anchor, t, radius)
+            for o in pairs(okn and type(near) == "table" and near or {}) do
+                local okp, px, py = pcall(function() return o.Pos.x, o.Pos.y end)
+                if o ~= anchor and okp and px and py then
+                    local left, top = math.floor(px - s[1] / 2 + 0.01), math.floor(py - s[2] / 2 + 0.01)
+                    local cells = {}
+                    for x = left, left + s[1] - 1 do for y = top, top + s[2] - 1 do cells[#cells + 1] = { x, y } end end
+                    local okw, pw = pcall(function() return o.Powered end)
+                    out[#out + 1] = { x = math.floor(px), y = math.floor(py), t = t, cells = cells,
+                                      powered = okw and pw == true }
+                end
+            end
+        end
+    end)
+    return out
+end
+
 -- Power stations trip (On = false) when demand goes over capacity; the pump only
 -- works with power. Measured live: one PowerStation = capacity 50.
 function api.utilities(switch_on)
@@ -1455,20 +1500,42 @@ function api.hookup(kind, known)
         error("no " .. st .. " yet. Order one first: api.place_object(\"" .. st .. "\", x, y) (3x3, $5000), then hookup again.", 0)
     end
     -- everything that needs this utility: built objects plus ordered ones
-    local users, seen = {}, {}
-    local function user(x, y, t) local k = x .. "," .. y; if not seen[k] then seen[k] = true; users[#users + 1] = { x, y, t } end end
-    for _, c in ipairs(object_cells(NEEDS[kind])) do
+    -- users: { anchor x, anchor y, type, dist, cells = {{x,y}...} }; owner: "x,y" -> the user covering it.
+    -- seen: anchor cells (water: those get the small pipe; fixtures only connect to small pipes).
+    local users, seen, owner = {}, {}, {}
+    local function user(x, y, t, cells, powered)
+        local k = x .. "," .. y
+        if seen[k] then return end
+        cells = cells or { { x, y } }
+        for _, c in ipairs(cells) do
+            local o = owner[c[1] .. "," .. c[2]]
+            if o and o[3] == t then return end  -- the same object, ordered and installed
+        end
+        seen[k] = true
+        local u = { x, y, t, cells = cells, powered = powered }
+        users[#users + 1] = u
+        for _, c in ipairs(cells) do owner[c[1] .. "," .. c[2]] = owner[c[1] .. "," .. c[2]] or u end
+    end
+    for _, f in ipairs(object_feet(NEEDS[kind])) do
         -- the map's own street lights are outdoors: do not run cable to them
         local indoor = true
-        if c[3] == "Light" then
-            local ok, ind = pcall(function() return World.GetCell(c[1], c[2]).Ind end)
+        if f.t == "Light" then
+            local ok, ind = pcall(function() return World.GetCell(f.x, f.y).Ind end)
             indoor = ok and ind == true
         end
-        if indoor then user(c[1], c[2], c[3]) end
+        if indoor then user(f.x, f.y, f.t, f.cells, f.powered) end
     end
     local needs = {}
     for _, t in ipairs(NEEDS[kind]) do needs[t] = true end
-    for _, o in ipairs(PLANNED_OBJECTS) do if needs[o[1]] then user(o[2], o[3], o[1]) end end
+    for _, o in ipairs(PLANNED_OBJECTS) do
+        if needs[o[1]] then
+            -- ordered at x covers x..x+w-1; height-h objects ordered at y cover y-h+1..y
+            local s = SIZE[o[1]] or { 1, 1 }
+            local cells = {}
+            for x = o[2], o[2] + s[1] - 1 do for y = o[3] - s[2] + 1, o[3] do cells[#cells + 1] = { x, y } end end
+            user(o[2], o[3], o[1], cells)
+        end
+    end
     -- nearest first, so long lines do not run over fixtures that could have their own short pipe
     local function dist(u)
         local bd
@@ -1495,7 +1562,10 @@ function api.hookup(kind, known)
             end
         end
     end
-    local LOAD = { Cooker = 12, Fridge = 5, WaterPumpStation = 20, LaundryMachine = 10, Tv = 3, LargeTv = 4 }
+    -- Fitted to station Demand measured live (2 Oct 2026): 3 cookers + 2 fridges = 50, pump + 2 TVs = 27,
+    -- saw + press + TV = 21, 3 laundry machines = 30, 2 CCTV monitors + 3 cameras = 23.
+    local LOAD = { Cooker = 12, Fridge = 7, WaterPumpStation = 25, LaundryMachine = 10, Tv = 1, LargeTv = 2,
+                   WorkshopSaw = 10, WorkshopPress = 10, CctvMonitor = 4, Cctv = 5 }
     local short = {}
     -- grids that actually have a source (station / pump); a line cut off from its source is an island
     -- (live: a staff room kept its cable after the link was cut and looked "connected")
@@ -1512,6 +1582,14 @@ function api.hookup(kind, known)
     for _, o in ipairs(PLANNED_OBJECTS) do
         for _, st in ipairs(STATION[kind]) do
             if o[1] == st then local id = comp[o[2] .. "," .. o[3]]; if id then has_source[id] = true end end
+        end
+    end
+    -- the grid a user already sits on, or nil. Power: a cable under any of its cells powers it. Water: only
+    -- the small pipe under its anchor cell connects a fixture.
+    local function grid_of(u)
+        for _, c in ipairs(kind == "power" and u.cells or { { u[1], u[2] } }) do
+            local id = comp[c[1] .. "," .. c[2]]
+            if id and has_source[id] then return id end
         end
     end
     if kind == "power" then
@@ -1531,16 +1609,31 @@ function api.hookup(kind, known)
                 if id and not built[id] then headroom[id] = (headroom[id] or 0) + 50; built[id] = true; planned_only[id] = true end
             end
         end
+        -- A built station's Demand only has what is powered now. Anything on its grid that is not powered yet
+        -- (its cable is still to be laid, or the object is still to be installed) will add to it: count it now,
+        -- or the next hookup squeezes more onto the same grid before the workmen catch up.
         for _, u in ipairs(users) do
-            local id = comp[u[1] .. "," .. u[2]]
-            if id and planned_only[id] then headroom[id] = headroom[id] - (LOAD[u[3]] or 2) end
+            local id = grid_of(u)
+            if id and (planned_only[id] or not u.powered) then headroom[id] = headroom[id] - (LOAD[u[3]] or 2) end
         end
+    end
+    local function load_of(u) return kind == "power" and (LOAD[u[3]] or 2) or 0 end
+    -- users a route would run under (and so power) besides its target: they count against the grid too
+    local function passengers(path, target)
+        local list, total, got = {}, 0, {}
+        for _, c in ipairs(path) do
+            local o = owner[c[1] .. "," .. c[2]]
+            if o and o ~= target and not o.done and not got[o] and not grid_of(o) then
+                got[o] = true; list[#list + 1] = o; total = total + load_of(o)
+            end
+        end
+        return list, total
     end
     local laid, joined = 0, 0
     for _, u in ipairs(users) do
         local uk = u[1] .. "," .. u[2]
-        if not (net[uk] and has_source[comp[uk]]) then
-            local need = kind == "power" and (LOAD[u[3]] or 2) or 0
+        if not u.done and not grid_of(u) then
+            local need = load_of(u)
             -- candidates: cells of grids with a source and (power) spare capacity, nearest first
             local cands = {}
             for _, c in ipairs(netlist) do
@@ -1561,13 +1654,21 @@ function api.hookup(kind, known)
                 end
                 return true
             end
-            local best, path, id
+            local best, path, id, riders
             for i = 1, math.min(#cands, 40) do
                 local c = cands[i]
                 for _, p in ipairs({ lpath(u[1], u[2], c[1][1], c[1][2]), (function()
                     local q = lpath(c[1][1], c[1][2], u[1], u[2]); local r = {}
                     for j = #q, 1, -1 do r[#r + 1] = q[j] end; return r end)() }) do
-                    if clean(p, c[3]) then best, path, id = c[1], p, c[3]; break end
+                    if clean(p, c[3]) then
+                        local list, extra = {}, 0
+                        if kind == "power" then list, extra = passengers(p, u) end
+                        -- the route also powers whatever it runs under: all of it must fit
+                        if kind ~= "power" or (headroom[c[3]] or 0) >= need + extra then
+                            best, path, id, riders = c[1], p, c[3], list
+                            break
+                        end
+                    end
                 end
                 if best then break end
             end
@@ -1581,7 +1682,13 @@ function api.hookup(kind, known)
                 laid = laid + lay(kind, rev, seen)
                 for _, c in ipairs(rev) do add(c[1], c[2]); if id then comp[c[1] .. "," .. c[2]] = id end end
                 if id then comp[uk] = id end
+                u.done = true
                 if id then headroom[id] = (headroom[id] or 0) - need end
+                for _, o in ipairs(riders or {}) do
+                    o.done = true
+                    headroom[id] = (headroom[id] or 0) - load_of(o)
+                    joined = joined + 1
+                end
                 joined = joined + 1
             end
         end
@@ -1954,13 +2061,45 @@ end
 doc("grants", "", "Every grant with advance, completion money and status (available, locked, accepted, completed).",
     "api.grants()")
 
+-- The game's refusal does not say which reason applies ("unknown, already taken, or too many at once").
+-- Work it out from the list. Measured live 2 Oct 2026: with 2 grants accepted a third was refused, and
+-- after the ExtraGrant research 3 could be held at once.
+local function grant_refusal(key, raw)
+    local ok, g = pcall(api.grants)
+    if not ok or type(g) ~= "table" then return raw end
+    local accepted, mine = {}, nil
+    for _, it in ipairs(g.grants) do
+        if it.status == "accepted" then accepted[#accepted + 1] = string.gsub(it.name, "^Grant_", "") end
+        if string.lower(it.name) == string.lower(key) then mine = it end
+    end
+    if not mine then
+        local names = {}
+        for _, it in ipairs(g.grants) do
+            if it.status == "available" then names[#names + 1] = string.gsub(it.name, "^Grant_", "") end
+        end
+        return "no grant by that name. Available now: " .. table.concat(names, ", ")
+    end
+    if mine.status == "accepted" then return "already accepted (it is running)" end
+    if mine.status == "completed" then return "already completed" end
+    if mine.status == "locked" then return "locked: finish the grants or research it needs first" end
+    local limit = api.is_researched("ExtraGrant") and 3 or 2
+    if #accepted >= limit then
+        return "too many grants running: " .. #accepted .. " accepted (" .. table.concat(accepted, ", ") ..
+               "), the game allows " .. limit .. (limit == 2 and " (3 after the ExtraGrant research)" or "") ..
+               ". Complete one first (`grants`, the game's To-do list says what each still needs)."
+    end
+    return raw
+end
+
 function api.grant(name)
     if type(name) ~= "string" or name == "" then error("grant name required (api.grants() lists them)", 0) end
     local key = name
     if not string.find(key, "^Grant_") then key = "Grant_" .. key end
-    local r = native("grant:" .. key)
+    -- native() raises the DLL's refusal itself; catch it to say which reason applies
+    local okr, r = pcall(native, "grant:" .. key)
+    if not okr then error(key .. ": " .. grant_refusal(key, tostring(r)), 0) end
     if type(r) ~= "string" then error("grants need bridge DLL 0.5", 0) end
-    if string.sub(r, 1, 6) == "error:" then error(key .. ": " .. string.sub(r, 8), 0) end
+    if string.sub(r, 1, 6) == "error:" then error(key .. ": " .. grant_refusal(key, string.sub(r, 8)), 0) end
     return { accepted = key, objectives_added = tonumber(string.match(r, "(%-?%d+)$")),
              note = "Accepted: the advance is in the bank; build what the To-do list asks for to get the rest." }
 end

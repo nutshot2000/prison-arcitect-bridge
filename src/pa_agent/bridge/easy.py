@@ -342,7 +342,35 @@ class Easy:
         lines += [f"water pump at {p['x']},{p['y']}: {'powered' if p['powered'] else 'NO POWER (no water!)'}"
                   for p in u["pumps"]]
         lines += ["PROBLEM: " + p for p in u["problems"]]
+        lines += self._tripped_detail([p for p in u["power_stations"] if p["on"] is False])
         return "\n".join(lines) or "no stations"
+
+    def _tripped_detail(self, tripped: list[dict]) -> list[str]:
+        """Why each tripped station tripped: a tripped station reports demand 0, so estimate its grid's
+        load from the save (cables flood-filled from the station, objects on them)."""
+        if not tripped:
+            return []
+        from ..state.report import grid_loads
+        try:
+            grids = grid_loads(self.snapshot())
+        except (BridgeError, EasyError):
+            return []
+        out = []
+        for g in grids:
+            if g["on"] or g["at"] is None:
+                continue
+            what = _counts(g["objects"]) or "nothing"
+            line = (f"TRIPPED {g['at'][0]},{g['at'][1]}: about {g['estimated_load']} wired to a "
+                    f"{g['capacity']:g} station ({what})")
+            if g["shared_with"]:
+                line += ("; its grid also reaches the station(s) at " +
+                         ", ".join(f"{a[0]},{a[1]}" for a in g["shared_with"] if a) +
+                         " - cut the cable between them (`remove cable`) so each has its own grid")
+            elif g["estimated_load"] > g["capacity"]:
+                line += (f" - move about {g['estimated_load'] - g['capacity']:g} of it to a new `station power` "
+                         "(cut the cable to that part with `remove cable`)")
+            out.append(line)
+        return out
 
     def v_report(self) -> str:
         from ..state.report import situation, situation_text
@@ -534,9 +562,13 @@ class Easy:
         root = self.snapshot()
         sit = situation(root)
         out = [f"ROOM: {p}" for p in room_problems(root)]
-        for st in sit["power_stations"]:
-            if not st["on"]:
-                out.append(f"POWER: station at {st['at']} is OFF (`power`)")
+        from ..state.report import grid_loads
+        for g in grid_loads(root):
+            if not g["on"]:
+                why = (f"its grid also reaches the station at {', '.join(str(a) for a in g['shared_with'])}"
+                       if g["shared_with"] else f"about {g['estimated_load']} wired to {g['capacity']:g} "
+                       f"({_counts(g['objects']) or 'nothing'})")
+                out.append(f"POWER: station at {g['at']} is OFF: {why} (`power` says how to fix it)")
         for p in sit["pumps"]:
             if not p["powered"]:
                 out.append(f"WATER: pump at {p['at']} has no power, so there is no water")

@@ -16,6 +16,7 @@ Save facts used (measured on build r11056, 29 Sep 2026):
 """
 from __future__ import annotations
 
+import math
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -510,11 +511,15 @@ def verify_orders(root: Section, ordered: list[dict], now: float) -> dict[str, A
     items = wq.section("Items") if wq else None
     queued_types = Counter(str(it.get("ObjType")) for it in (items.sections() if items else []) if it.get("ObjType"))
     result = {"installed": 0, "waiting": 0, "failed": []}
+    # objects whose centre lies further from the ordered cell (measured 2 Oct 2026: PowerStation ordered at
+    # 130,30 -> Pos 131.5,31.5; RoadGate ordered at 138,4 -> Pos 141.5,4.5). They were listed as never built.
+    reach = {"PowerStation": (3.1, 2.1), "WaterPumpStation": (3.1, 2.1), "RoadGate": (7.1, 1.1)}
     for od in ordered:
         t, x, y = od["type"], od["x"], od["y"]
         # an object ordered at x covers x..x+w-1 (Pos = its centre), height-2 objects cover y-1..y:
         # match only an object whose centre lies on that footprint, not a neighbour of the same type
-        near = any(-0.1 <= px - x <= 3.1 and -1.1 <= py - y <= 1.1 for px, py in have.get(t, []))
+        rx, ry = reach.get(t, (3.1, 1.1))
+        near = any(-0.1 <= px - x <= rx and -1.1 <= py - y <= ry for px, py in have.get(t, []))
         if near:
             result["installed"] += 1
         elif queued_types.get(t) or now - od.get("t", now) < 360:
@@ -658,6 +663,78 @@ def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "
               "W/w pump powered/NO POWER, L large pipe, s small pipe, T fixture on pipe, t fixture NOT on pipe; "
               "# wall/fence, : indoor floor")
     return "\n".join([f"utilities x {x1}..{x2}, y {y1}..{y2}", *rows, legend])
+
+
+# Power draw per object, fitted to station Demand measured live (2 Oct 2026): 3 cookers + 2 fridges = 50,
+# pump + 2 TVs = 27, saw + press + TV = 21, 3 laundry machines = 30, 2 CCTV monitors + 3 cameras = 23.
+# Keep in step with LOAD in mod/ai_bridge/data/world.lua (api.hookup).
+POWER_LOAD = {"Cooker": 12, "Fridge": 7, "WaterPumpStation": 25, "LaundryMachine": 10, "Tv": 1, "LargeTv": 2,
+              "WorkshopSaw": 10, "WorkshopPress": 10, "CctvMonitor": 4, "Cctv": 5, "Light": 2, "Capacitor": 2,
+              "DoorControlSystem": 2, "MetalDetector": 2, "ArcadeCabinet": 2, "PhoneMonitor": 2}
+# footprints (w, h) of the powered objects that are not 1x1; Pos is the object's centre
+POWER_SIZE = {"Cooker": (2, 1), "Fridge": (2, 1), "WaterPumpStation": (3, 3), "PowerStation": (3, 3),
+              "LargeTv": (2, 1), "WorkshopSaw": (3, 1), "WorkshopPress": (3, 1), "CctvMonitor": (3, 1)}
+
+
+def _footprint(o: Section) -> list[tuple[int, int]]:
+    x, y = o.num("Pos.x"), o.num("Pos.y")
+    if x is None or y is None:
+        return []
+    w, h = POWER_SIZE.get(str(o.get("Type")), (1, 1))
+    left, top = math.floor(x - w / 2 + 0.01), math.floor(y - h / 2 + 0.01)
+    return [(left + dx, top + dy) for dx in range(w) for dy in range(h)]
+
+
+def grid_loads(root: Section) -> list[dict[str, Any]]:
+    """Each power station's grid from the save: what is wired to it and the load that adds up to.
+
+    A tripped station reports Demand 0, which hides why it tripped (live: "OFF, demand 0/50" over a kitchen
+    plus the water pump). This flood-fills the cables from each station and sums POWER_LOAD over the objects
+    on them, so `power` can say "about 61 on a 50 station: 3 Cooker, 2 Fridge, WaterPumpStation".
+    """
+    elec: set[tuple[int, int]] = set()
+    esec = root.section("Electricity")
+    for c in esec.sections() if esec else []:
+        try:
+            x, y = (int(v) for v in c.name.split()[:2])
+            elec.add((x, y))
+        except ValueError:
+            pass
+    objs = _objects(root)
+    stations = [o for o in objs if o.get("Type") == "PowerStation"]
+    users = [(o, _footprint(o)) for o in objs if o.get("Type") in POWER_LOAD]
+    comp: dict[tuple[int, int], int] = {}
+    out = []
+    for i, st in enumerate(stations):
+        seeds = _footprint(st)
+        cid = comp.get(seeds[0]) if seeds else None
+        if cid is None:
+            cid = i
+            stack = [p for p in seeds]
+            for p in seeds:
+                comp[p] = cid
+            while stack:
+                x, y = stack.pop()
+                for n in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if n in elec and n not in comp:
+                        comp[n] = cid
+                        stack.append(n)
+        out.append({"at": _pos(st), "on": _station_on(st), "demand": st.num("Demand", 0) or 0,
+                    "capacity": st.num("Capacity", 50) or 50, "grid": cid})
+    for s in out:
+        on_grid = Counter()
+        load = 0
+        for o, cells in users:
+            if any(comp.get(p) == s["grid"] for p in cells):
+                t = str(o.get("Type"))
+                on_grid[t] += 1
+                load += POWER_LOAD.get(t, 2)
+        s["estimated_load"] = load
+        s["objects"] = dict(on_grid)
+        s["shared_with"] = [t["at"] for t in out if t is not s and t["grid"] == s["grid"]]
+    for s in out:
+        del s["grid"]
+    return out
 
 
 def built_area(root: Section, margin: int = 2) -> tuple[int, int, int, int]:

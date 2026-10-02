@@ -425,7 +425,7 @@ local gs = {}
 for _, g in ipairs(r.result.grants) do gs[g.name] = g.status end
 assert(gs.Grant_bootstraps == "available" and gs.Grant_Administration == "locked" and gs.Grant_Health == "completed", J.encode(gs))
 r = call("grant", "bootstraps"); assert(r.ok and r.result.accepted == "Grant_bootstraps" and r.result.objectives_added == 8, J.encode(r))
-r = call("grant", "bootstraps"); assert(not r.ok and string.find(r.error, "not accepted"), J.encode(r))
+r = call("grant", "bootstraps"); assert(not r.ok and string.find(r.error, "already accepted"), J.encode(r))
 r = call("grants"); for _, g in ipairs(r.result.grants) do if g.name == "Grant_bootstraps" then assert(g.status == "accepted") end end
 -- emergencies
 r = call("emergency", "tunnel search"); assert(r.ok and r.result.done == "tunnelsearch" and r.result.state.tunnelsearch, J.encode(r))
@@ -448,7 +448,7 @@ World.Balance = 100
 ---------------------------------------------------------------------------
 for i = #world_objects, 1, -1 do table.remove(world_objects, i) end
 -- station A (10..12, 10..12) is full; station B (40..42, 10..12) has room
-world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 11.5, y = 11.5 }, Switch = true, Demand = 48, Capacity = 50 }
+world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 11.5, y = 11.5 }, Switch = true, Demand = 50, Capacity = 50 }
 world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 41.5, y = 11.5 }, Switch = true, Demand = 10, Capacity = 50 }
 world_objects[#world_objects + 1] = { Type = "Cooker", Pos = { x = 15.5, y = 20.5 } }   -- nearer to A, A is full
 world_objects[#world_objects + 1] = { Type = "Tv", Pos = { x = 25.5, y = 30.5 } }      -- on an island (no station)
@@ -475,4 +475,30 @@ calls = {}
 assert(loadstring(src, "world.lua"))(); api = PA_BRIDGE.api; Update(0.1)
 r = call("hookup", "power", known)
 assert(r.ok and #r.result.not_connected >= 1 and string.find(r.result.note, "station power"), J.encode(r))
+---------------------------------------------------------------------------
+-- a cable that runs under another object powers it too: that load must count (live 2 Oct 2026: a kitchen's
+-- cable ran under the next cooker and the station tripped). Station C (10..12, 40..42) has 19 spare. In a row
+-- on y=41: cooker 16..17 (12), cooker 20..21 (12), fridge 24..25 (7). The near cooker and the fridge fit
+-- (19); the straight line to the fridge runs under the middle cooker, which would make it 31: the fridge
+-- must go round (y=40), and nothing may be laid under 20..21.
+---------------------------------------------------------------------------
+for i = #world_objects, 1, -1 do table.remove(world_objects, i) end
+world_objects[#world_objects + 1] = { Type = "PowerStation", Pos = { x = 11.5, y = 41.5 }, Switch = true, Demand = 31, Capacity = 50 }
+world_objects[#world_objects + 1] = { Type = "Cooker", Pos = { x = 21, y = 41.5 } }  -- covers 20..21
+world_objects[#world_objects + 1] = { Type = "Cooker", Pos = { x = 17, y = 41.5 } }  -- covers 16..17
+world_objects[#world_objects + 1] = { Type = "Fridge", Pos = { x = 25, y = 41.5 } }  -- covers 24..25
+assert(loadstring(src, "world.lua"))(); api = PA_BRIDGE.api; Update(0.1)
+calls = {}
+r = call("hookup", "power", { "11,40" })
+assert(r.ok, r.error)
+assert(r.result.newly_connected == 2, "near cooker + fridge fit in 19: " .. J.encode(r))
+for _, c in ipairs(calls) do
+    if c[2] == "ElectricalCable" then
+        assert(not (c[4] == 41 and (c[3] == 20 or c[3] == 21)), "cable under the unpaid cooker at " .. c[3] .. "," .. c[4])
+    end
+end
+-- the planned load counts: a second hookup (cables not laid yet) must not squeeze the last cooker on
+calls = {}
+r = call("hookup", "power", { "11,40" })
+assert(r.ok and r.result.newly_connected == 0, J.encode(r))
 print("world.lua tests passed")

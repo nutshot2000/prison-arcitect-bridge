@@ -78,11 +78,14 @@ closed fence stall every workman (`room` refuses them now; `progress` shows UNRE
    prisoners and 4 people died. Lower the intake in the game (Reports > Intake) until beds ≥ prisoners.
 2. **Fence first.** `fence` around the whole prison, including Deliveries and Garbage by the road. Escapes dropped to
    0 once it stood.
-3. **Power:** one PowerStation feeds **50**, and a cooker alone takes about **10** (6 cookers + 2 fridges + lights =
-   90). **Two stations on the same grid switch each other off** (`Overloaded 2`), whether they touch or are joined by
+3. **Power:** one PowerStation feeds **50**. Measured draws: cooker 12, fridge 7, water pump 25, laundry machine
+   10, workshop saw/press 10 each, CCTV camera ~5, monitor ~4, TV 1. So one kitchen (3 cookers + 2 fridges) fills a
+   station, and the pump plus a kitchen trips one. A cable under ANY cell of an object powers it (cookers and fridges
+   are 2 wide). **Two stations on the same grid switch each other off** (`Overloaded 2`), whether they touch or are joined by
    cable. They do not share load. Give every station its own grid: put a `place PowerSwitch x y` on each cable between
    the parts and `switch x y off`. Check with `power`: each station should read under 50. A tripped station shows
-   `PROBLEM: ... OFF`; `power on` resets it after you fix the cause. `utilmap power` shows the cables (objects are
+   `PROBLEM: ... OFF` and a `TRIPPED` line with what is wired to it (a tripped station itself reads demand 0);
+   `power on` resets it after you fix the cause. `utilmap power` shows the cables (objects are
    drawn over the cable under them, so look at the cells around them).
 4. **No power, no water.** The WaterPumpStation needs electricity. Blue drops over toilets/showers in the game = no
    water; check `power` first.
@@ -90,7 +93,8 @@ closed fence stall every workman (`room` refuses them now; `progress` shows UNRE
    Wiring them into your grid overloaded every station in the test prison.
 6. **Toilets, showers and sinks need water; cookers, fridges, TVs and lights need power.** Run `hookup` after every
    new room. It reuses cable and pipe already in the ground, only wires power users to a grid that has a station
-   with spare capacity, and never routes a cable next to another grid's line (that would join two stations). What it
+   with spare capacity (counting everything a new cable runs under, and work still to be laid), and never routes a
+   cable next to another grid's line (that would join two stations). What it
    cannot connect safely is listed as `not connected`: add a station (`station`) and run `hookup` again.
    Never call the raw `api.hookup("power", {})` with an empty cell list: it cannot see existing cable and lays a
    second network over the first (the play verb passes the cells from the save; the raw call now refuses).
@@ -108,6 +112,14 @@ closed fence stall every workman (`room` refuses them now; `progress` shows UNRE
     a Staffroom WITH a DrinkMachine; long Solitary queue → `solitary`; families waiting → `room visitation`.
 12. **Objects on a room's bottom wall face up.** A sink or fridge facing into the wall shows "Working Position
     Cannot be Reached" and is never used. `room` does this; if you `place` by hand, pass the facing.
+13. **Grants: 2 at once, 3 after the ExtraGrant research.** `grant` says why the game refused one.
+14. **Fences never replace walls.** A `Fence` line over a built or ordered wall leaves those cells alone (live: a fence
+    round Deliveries turned a shower's east wall into fence). Prisoners walking through Deliveries pick up
+    contraband; a fence with `StaffDoor`s round it was tried on 2 Oct 2026 (effect not confirmed yet).
+15. **Not in the bridge: patrols, deployment, prisoner job slots, reform programs.** Use the game's Deployment,
+    Logistics and Reform screens. In Deployment > Patrols, dragging Assign Guards along a route adds a guard slot for
+    every cell it passes (one short drag added 12).
+16. **`pa_wait` (MCP) runs at most 55 s per call**: clients drop tool calls after about a minute. Use speed 4-5.
 
 ## When something fails
 

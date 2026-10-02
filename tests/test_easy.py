@@ -136,5 +136,23 @@ class ImageTests(unittest.TestCase):
             self.assertEqual(downscale(W, H, rows, 2)[:2], (1, 1))
 
 
+
+
+class McpWaitTests(unittest.TestCase):
+    def test_wait_is_capped_under_the_client_timeout(self):
+        from unittest import mock
+        from pa_agent.bridge import mcp_server
+        s = mcp_server.Server(FakeBridge())
+        _, _, run = s.tools["pa_wait"]
+        with mock.patch("pa_agent.bridge.easy.time.sleep") as slept:
+            out = run({"seconds": 300, "speed": 4})
+        slept.assert_called_once_with(mcp_server.MCP_WAIT_MAX)
+        self.assertIn("capped", out)
+        with mock.patch("pa_agent.bridge.easy.time.sleep") as slept:
+            out = run({})
+        slept.assert_called_once_with(50)
+        self.assertNotIn("capped", out)
+
+
 if __name__ == "__main__":
     unittest.main()

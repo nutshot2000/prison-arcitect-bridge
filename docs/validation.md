@@ -227,3 +227,37 @@ Fixed along the way: fence re-run no longer orders a second RoadGate (two had be
   because of the next bug); `room`/`building`/`cells`/`solitary` now refuse rectangles over zoned rooms or ordered
   work. `reload-mod` left the OLD code answering while the game was paused (the DLL runs the pump registered at
   hello); it now calls the new chunk's `hello()`, and a paused reload was verified to refuse the overlap.
+
+## Follow-up 7 — 2 October 2026: an hour of autonomous play (Claude via MCP), fixes from it
+
+Fresh 150x120 map, played day 1 → day 8 through the MCP tools: 50 cells, 2 kitchens/canteens, 5 power stations,
+laundry, workshop, classroom, library, chapel, infirmary, CCTV room, kennel; 41 prisoners; 8 grants completed.
+Problems hit, and what changed:
+
+- **Power hookup tripped stations three times.** (1) The kitchen cable ran under the other cookers, which got power
+  without being counted; (2) estimated loads were low (pump 20 vs 25 measured); (3) a built station's Demand only has
+  what is already powered, so cable still to be laid was not counted and a second `hookup` (`auto`) added more.
+  `api.hookup` now tracks every cell an object covers (`object_feet`, footprints from `SIZE`), charges a route for
+  each unpaid object it runs under (and tries the other L-route when that does not fit), subtracts not-yet-powered
+  objects on a grid, and uses loads fitted to live Demand: 3 cookers + 2 fridges = 50, pump + 2 TVs = 27, saw + press
+  + TV = 21, 3 laundry machines = 30, 2 CCTV monitors + 3 cameras = 23. Lua test: a fridge whose straight route runs
+  under a second cooker fails on the old code ("cable under the unpaid cooker at 20,41") and passes now.
+  Live after reload: `hookup power` on the running prison connected 2 objects (2 cable pieces), no trips.
+- **A tripped station read "OFF, demand 0/50".** `power` / `problems` now flood-fill the save's cables from each station
+  and list what is on its grid (`grid_loads`); on the day-6 save the estimate equals the game's Demand on all four
+  grids (50, 27, 44, 30).
+- **A fence line replaced a shower's brick wall** (fence round Deliveries along x=125). `build_area`/`build_line` and
+  `perimeter` skip cells that have, or are ordered to get, a non-fence wall. Live: Fence over the kitchen's west wall
+  → queued 0, kept 8.
+- **`problems` listed every station and road gate as "ORDERS never built"** (centre further from the ordered cell
+  than the match window). Fixed with per-type reach; unit test.
+- **Grant refusals said "unknown, already taken, or too many at once".** `api.grant` now says which: unknown (lists
+  the available ones), already accepted, completed, locked, or too many running (2 at once, 3 after ExtraGrant:
+  observed live — a third was refused at 2, three ran at once after ExtraGrant). Live: Foo, EnhancedSecurity
+  (running), Bailout (locked), bootstraps (completed) each got the right message. The "too many" branch was not
+  triggered live.
+- **`pa_wait` 90 s came back "Request timed out"** from the MCP client. MCP `pa_wait` is capped at 55 s per call.
+- Not in the bridge (needed the game UI via screen control): guard patrols, prisoner job slots, reform programs.
+  In Deployment > Patrols a short drag with Assign Guards added 12 guard slots.
+
+Tests: 52 Python tests and `mod/test_world.lua` (LuaJIT via lupa 2.8) pass.

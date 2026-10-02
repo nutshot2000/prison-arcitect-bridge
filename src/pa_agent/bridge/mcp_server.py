@@ -16,6 +16,7 @@ from .client import BridgeClient, BridgeError
 from .easy import Easy, EasyError, explain
 
 PROTOCOL_VERSION = "2024-11-05"
+MCP_WAIT_MAX = 55  # seconds of real time per pa_wait call
 SERVER_INFO = {"name": "prison-architect-bridge", "version": "0.4.0"}
 
 INSTRUCTIONS = """You are playing a live game of Prison Architect. Coordinates are map cells:
@@ -31,7 +32,13 @@ Hire with pa_hire (Guard, Cook, Workman, Warden; others after pa_research).
 pa_rooms says which rooms the game thinks are missing something.
 Nothing is built while the game is paused: pa_resume. pa_save saves.
 Every tool answers in a few lines; errors come with a HINT line.
-Not available: camera, regime. pa_lua runs raw Lua for experts."""
+pa_wait runs at most 55 s per call (MCP clients time out after about a minute).
+If a station trips, pa_power says what is wired to it and how to split it.
+Not available here: guard patrols, deployment, prisoner job slots and reform
+programs (the game's Deployment, Logistics and Reform screens). Careful in
+Deployment > Patrols: dragging Assign Guards along a route adds a guard slot for
+every cell (a short drag once added 12).
+pa_lua runs raw Lua for experts."""
 
 
 def _schema(props: dict, required: list[str]) -> dict:
@@ -156,8 +163,15 @@ class Server:
              "(needs a Warden with an Office; the cost is paid when it starts).", {"name": STR}, [], ["name"])
         verb("pa_pause", "pause", "Pause the game (you can still plan, build orders, zone, hire).", {}, [], [])
         verb("pa_resume", "resume", "Unpause. speed 1 = normal, up to 5.", {"speed": {"type": "number"}}, [], ["speed"])
-        verb("pa_wait", "wait", "Let the game run for some real seconds (default 60, max 600) at a speed (default 3), "
-             "then report what got built.", {"seconds": INT, "speed": {"type": "number"}}, [], ["seconds", "speed"])
+        @self.tool("pa_wait", f"Let the game run for some real seconds (default 50, max {MCP_WAIT_MAX}) at a speed "
+                   "(default 3, up to 5), then report what got built. For longer, call it again or use speed 4-5.",
+                   _schema({"seconds": INT, "speed": {"type": "number"}}, []))
+        def _wait(a):
+            # MCP clients give up on a tool call after about a minute (live: a 90 s wait came back as "Request
+            # timed out" while the game kept running), so one call stays under that.
+            secs = min(int(a.get("seconds") or 50), MCP_WAIT_MAX)
+            note = f" (capped at {MCP_WAIT_MAX}s per call)" if (a.get("seconds") or 0) > MCP_WAIT_MAX else ""
+            return easy.run("wait", [str(secs), str(a.get("speed") or 3)]) + note
         verb("pa_progress", "progress", "What you ordered that is built vs still waiting.", {}, [], [])
         verb("pa_save", "save", "Save the prison to saves/<name>.prison.", {"name": STR}, [], ["name"])
         verb("pa_help", "help", "List the easy verbs, or explain one (verb: room, cells, hire...).", {"verb": STR}, [],

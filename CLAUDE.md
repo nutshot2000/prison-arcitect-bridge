@@ -27,7 +27,9 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 - After editing world.lua: `pa-agent reload-mod` loads it into the running game (planned-work tracking restarts).
   Install for real with `scripts\install_bridge.ps1` (game closed; also copies the DLL).
 - New game internals: disassemble with capstone (see docs/validation.md for the addresses found), then verify live.
-- Game facts: power station 50 capacity, cooker ≈ 10, one station per grid (`Overloaded 2` otherwise), player
+- Game facts: power station 50 capacity; loads cooker 12, fridge 7, pump 25, laundry 10, saw/press 10, TV 1
+  (fitted to live Demand; `LOAD` in world.lua and `POWER_LOAD` in report.py must agree); a cable under any cell of
+  an object powers it; one station per grid (`Overloaded 2` otherwise), player
   on/off field is `Switch`; the pump needs power; UI tool names (Building, Demolish, CancelJobs) are not materials.
 - Record live tests in docs/validation.md. Never push without asking the user.
 
