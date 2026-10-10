@@ -72,7 +72,7 @@ SHARED_ROOMS = {"Yard", "Canteen", "Shower", "CommonRoom", "Library", "Chapel", 
                 "Classroom", "Workshop", "Laundry", "Kitchen"}
 
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols", "catalog", "deployment"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols", "catalog", "deployment", "logistics"}
 
 # `room` kinds -> the game's room type (keep in step with KIND_ROOM in world.lua)
 KIND_ROOM = {"kitchen": "Kitchen", "canteen": "Canteen", "shower": "Shower", "yard": "Yard", "holding": "HoldingCell",
@@ -203,6 +203,8 @@ VERB_HELP = {
     "deployment": ("deployment [all]",
                    "Deployment per sector (room): security zone (Shared, MaxSecOnly, StaffOnly...), staff posts\n"
                    "  (guards, dog handlers, cooks... and how many are manned) and priority. Read-only for now."),
+    "logistics": ("logistics", "Food distribution: which canteens each kitchen supplies, canteens with no kitchen,\n"
+                  "  and the cell blocks / dorms whose canteen was set by hand. Read-only for now."),
     "patrols": ("patrols", "Guard patrol routes (blue/magenta lines, priority 0-2) and who is assigned to them."),
     "patrol": ("patrol route <blue|magenta> <x1> <y1> <x2> <y2> | patrol assign <guard|dog> <x> <y> |\n"
                "  patrol priority <up|down> <x> <y> | patrol clear <x1> <y1> <x2> <y2>",
@@ -1173,6 +1175,38 @@ class Easy:
         elif not show_all:
             lines.append(f"({len(sectors)} sectors in total; `deployment all` lists every one.)")
         lines.append("Read-only: change it in the game's Deployment tab (the bridge cannot write deployment yet).")
+        return "\n".join(lines)
+
+    def v_logistics(self) -> str:
+        """Food distribution from a fresh save: kitchens -> canteens, and the eating areas set by hand
+        (read-only: change it in the game's Logistics > Food Distribution)."""
+        from ..state.report import deployment
+        secs = {s["id"]: s for s in deployment(self.snapshot(max_age=0))}
+
+        def name(sid: int) -> str:
+            s = secs.get(sid)
+            return f"{s['room'] or 'area'} {sid} (x {s['x1']}..{s['x2']} y {s['y1']}..{s['y2']})" if s else f"sector {sid}"
+
+        kitchens = [s for s in secs.values() if s["room"] == "Kitchen"]
+        canteens = [s for s in secs.values() if s["room"] == "Canteen"]
+        if not kitchens and not canteens:
+            return "No kitchens or canteens yet."
+        lines = ["Food:"]
+        supplied = set()
+        for k in sorted(kitchens, key=lambda s: s["id"]):
+            supplied.update(k["targets"])
+            to = ", ".join(name(t) for t in k["targets"]) or "NO canteen"
+            lines.append(f"- {name(k['id'])} supplies {to}" + (" [set by hand]" if k["manual"] else ""))
+        for c in canteens:
+            if c["id"] not in supplied:
+                lines.append(f"- WARNING: {name(c['id'])} gets food from no kitchen")
+        eaters = [s for s in secs.values() if s["room"] not in ("Kitchen", "Canteen") and s["manual"] and s["targets"]]
+        for s in sorted(eaters, key=lambda s: s["id"]):
+            lines.append(f"- {name(s['id'])} eats at {', '.join(name(t) for t in s['targets'])} [set by hand]")
+        lines.append("Cell blocks and dorms not listed eat at a canteen the game picks for them (not saved).")
+        if not any(s["room"] == "Laundry" for s in secs.values()):
+            lines.append("Laundry: none built (`room laundry`), so Laundry Distribution has nothing to route.")
+        lines.append("Read-only: change routes in the game's Logistics > Food / Laundry Distribution.")
         return "\n".join(lines)
 
     def v_tunnels(self, action: str = "") -> str:

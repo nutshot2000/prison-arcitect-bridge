@@ -372,3 +372,20 @@ Tests: 61 Python tests pass (4 new catalog tests on hand-written data in the gam
   names are from the game's `CanEnterCell: Can't enter Zone<X>` strings.
 
 Tests: 62 Python tests pass.
+
+## Follow-up 13 — 10 October 2026: Logistics (read-only)
+
+- The Logistics tab's Min/Med/Max/SuperMax Sec Grading, Room Quality and Cell Status are views: a save before and
+  after using them changed nothing (the grading panel shows the sector grade, e.g. Med Sec 85/250, from privileges,
+  facility quality and conditions). Food / Laundry Distribution need AdvancedManagement (researched through the
+  bridge, $1,000, a few game minutes). There is no laundry room, so Laundry Distribution has no lines.
+- Food Distribution is stored on sectors, not rooms (room `Connected` lists stay empty): a kitchen sector's
+  `Targets` = canteen sector ids it supplies (always saved); a cell block / dorm sector's `Targets` = the canteen it
+  eats at, saved only when set by hand, with `ManualTargets true`. In the view dashed lines are automatic, solid ones
+  manual. User test: north kitchen 6 -> south canteen 119 (manual; kitchen 112 then supplied both canteens),
+  dorm 109 -> canteen 8, dorm 111 -> canteen 119. Changing it goes through SectorAddTarget / SectorClearTargets
+  (network command layer, like Deployment), so the bridge does not write it.
+- `logistics` / MCP `pa_logistics`: kitchens -> canteens (with [set by hand]), canteens no kitchen supplies (WARNING),
+  eating areas set by hand, and a note when no laundry exists. Live output matched the user's screenshot.
+
+Tests: 63 Python tests pass.

@@ -135,6 +135,7 @@ class Server:
              "(toggle; call again to lift), status.", {"action": STR}, [], ["action"])
         verb("pa_deployment", "deployment", "Deployment per sector (room): security zone (Shared, MaxSecOnly, StaffOnly...), staff posts (guards, dog handlers, cooks, and how many are manned) and priority. Read-only. "
              "which: all lists every sector.", {"which": STR}, [], ["which"])
+        verb("pa_logistics", "logistics", "Food distribution: which canteens each kitchen supplies, canteens with no kitchen, and eating areas set by hand. Read-only.", {}, [], [])
         verb("pa_patrols", "patrols", "Guard patrol routes (blue/magenta, priority 0-2) and the guards / dog handlers "
              "assigned to them.", {}, [], [])
         verb("pa_patrol", "patrol", "Guard patrols (Deployment > Patrols). action route: draw a straight line x1,y1 -> "

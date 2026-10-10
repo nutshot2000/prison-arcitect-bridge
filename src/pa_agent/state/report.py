@@ -229,6 +229,12 @@ def deployment(root: Section) -> list[dict]:
             "outside": str(s.get("Outside", "false")).lower() == "true",
             "zone": s.get("Zone") or "Shared", "posts": posts, "priority": priority.get(sid, 0),
             "custom": [n for n in range(12) if str(s.get(f"CustomZone{n}", "false")).lower() == "true"],
+            # Logistics > Food/Laundry Distribution (measured 10 Oct 2026): a kitchen's Targets = the canteens it
+            # supplies (always saved); a cell block / dorm's Targets = the canteen it eats at, saved only when set by
+            # hand (ManualTargets true; automatic routes are worked out at runtime and not saved).
+            "targets": [int(v) for k, v in (s.section("Targets").entries if s.section("Targets") else [])
+                        if k != "Size" and str(v).lstrip("-").isdigit()],
+            "manual": str(s.get("ManualTargets", "false")).lower() == "true",
         })
     return out
 

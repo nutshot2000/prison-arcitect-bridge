@@ -287,3 +287,25 @@ END
         self.assertEqual(yard["custom"], [2])
         self.assertEqual(secs[8]["room"], "Canteen")
         self.assertEqual(secs[8]["posts"], {"guard": (1, 2)})
+
+    def test_food_targets(self):
+        from pa_agent.state.report import deployment
+        save = """
+BEGIN Rooms
+    BEGIN "[i 0]"  Id.i 1  RoomType Kitchen  END
+    BEGIN "[i 1]"  Id.i 2  RoomType Canteen  END
+    BEGIN "[i 2]"  Id.i 3  RoomType Dormitory  END
+END
+BEGIN Sectors
+    BEGIN Sectors
+        Size 4
+        BEGIN "[i 1]"  id 1  Room.i 1  BEGIN Targets    Size 1  "[i 0]" 2  END  END
+        BEGIN "[i 2]"  id 2  Room.i 2  END
+        BEGIN "[i 3]"  id 3  Room.i 3  ManualTargets true  BEGIN Targets    Size 1  "[i 0]" 2  END  END
+    END
+END
+"""
+        secs = {s["id"]: s for s in deployment(parse_prison(save))}
+        self.assertEqual((secs[1]["targets"], secs[1]["manual"]), ([2], False))  # kitchen -> canteen, automatic
+        self.assertEqual((secs[3]["targets"], secs[3]["manual"]), ([2], True))   # dorm eats there, set by hand
+        self.assertEqual(secs[2]["targets"], [])

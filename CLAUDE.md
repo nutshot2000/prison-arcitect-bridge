@@ -6,7 +6,7 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 
 - Easy front door: `.\prison.ps1 <verb>` = `.\.venv\Scripts\pa-agent.exe play <verb>` (help, status, next, report,
   look, space, room, cells, fence, station, place, hookup, power, switch, utilmap, zone, rooms, hire, research,
-  intake, pause, resume, wait, progress, save, screenshot, patrols, patrol, catalog, floor, wall, deployment, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
+  intake, pause, resume, wait, progress, save, screenshot, patrols, patrol, catalog, floor, wall, deployment, logistics, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
 - Loop: `status` → `next` → one action → `wait 60` → `report`. Set `intake beds` first.
 - `report` / `utilmap` / `rooms` / `next` save the game (`pa_agent_snapshot`) and parse it
   (`src/pa_agent/state/report.py`). `screenshot` gets the last rendered frame from the DLL (works behind windows).
