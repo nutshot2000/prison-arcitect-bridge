@@ -350,3 +350,25 @@ The save has no objective state (its `Objectives` section is empty); the panel's
   installed (user's screenshot showed both).
 
 Tests: 61 Python tests pass (4 new catalog tests on hand-written data in the game's format).
+
+## Follow-up 12 — 10 October 2026: Deployment (read-only for now)
+
+- Save diff after one click each (user, day 13): Assign Guards / Cooks / Dog Handlers add a post to the clicked room's
+  sector (`Sectors > Sectors > [i n] > Stations / CookStations / DogStations > [i k] Entity.i`, -1 until a worker
+  takes it; a guard and a cook took theirs at once), a `DeploymentSchedule > Schedules > "Schedule 0"` entry
+  (SectorId, Num<Type>, PriorityLevel) appears, Prioritize Area raised the yard sector to PriorityLevel 2 (two
+  clicks), and Max Sec Only set `Zone MaxSecOnly` on the whole yard sector (one click applies to the whole sector;
+  no cells change). 49 sectors (NextSectorId 217 is only the next id).
+- Code: sector save 0x1407183b0 - post vectors guard +0x80, dog +0x98, armed +0xb0, cook +0xc8, doctor +0xe0,
+  janitor +0xf8, gardener +0x110, farmer +0x128, orderly +0x140, CustomZone0..11 bytes +0x1bd. Patrols and the
+  direction arrows go through the drag dispatcher 0x1404dbee0 (case 8; tools 0x13..0x15 -> 0x1404d5260 paints cells
+  +0x40/+0x41/+0xcc). The Deployment-tab clicks were not found: they appear to go through the network command
+  layer (SectorZoneChange, GuardDeploymentChange, SectorJobCountChange are registered by name in 0x140030e40).
+  Writing sector data directly is NOT done: the schedule may rebuild posts at shift change, and a direct Mat write
+  crashed the game before (follow-up 5).
+- `deployment [all]` / MCP `pa_deployment` (read-only, from a fresh save): per sector the room, zone (with its
+  meaning, and a WARNING when a one-category zone is on a shared room such as the Yard), posts (manned / total),
+  priority, custom zones. Live output matched the test exactly. Only MaxSecOnly was seen in a save; the other zone
+  names are from the game's `CanEnterCell: Can't enter Zone<X>` strings.
+
+Tests: 62 Python tests pass.

@@ -184,6 +184,55 @@ def tunnel_cells(root: Section) -> list[tuple[int, int]]:
     return sorted(out)
 
 
+# Deployment > Deployment, per sector (a room, or the outdoor/yard areas). Save sections measured 10 Oct 2026:
+# `Sectors > Sectors > [i n]` (id, TopLeft/BottomRight, Room.i, Zone e.g. MaxSecOnly - absent = Shared,
+# <Type>Stations > [i k] Entity.i (-1 = post not taken yet), CustomZone0..11) and
+# `DeploymentSchedule > Schedules > "Schedule n" > i` (SectorId, Num<Type>, PriorityLevel 0..2).
+DEPLOY_POSTS = (("Stations", "guard"), ("DogStations", "dog handler"), ("ArmedGuardStations", "armed guard"),
+                ("OrderlyStations", "orderly"), ("CookStations", "cook"), ("DoctorStations", "doctor"),
+                ("JanitorStations", "janitor"), ("GardenerStations", "gardener"), ("FarmerStations", "farmer"))
+
+
+def deployment(root: Section) -> list[dict]:
+    """Every sector with its room type, zone, staff posts (taken / total), custom zones and priority."""
+    sec = root.section("Sectors")
+    sec = sec.section("Sectors") if sec else None
+    if not sec:
+        return []
+    room_type = {}
+    rooms = root.section("Rooms")
+    for r in rooms.items_indexed() if rooms else []:
+        room_type[str(r.get("Id.i"))] = r.get("RoomType")
+    priority: dict[str, int] = {}
+    sched = root.section("DeploymentSchedule")
+    sched = sched.section("Schedules") if sched else None
+    for s in sched.sections() if sched else []:
+        for e in s.get_all("i"):
+            if isinstance(e, Section):
+                priority[str(e.get("SectorId"))] = max(priority.get(str(e.get("SectorId")), 0),
+                                                       int(e.num("PriorityLevel", 0) or 0))
+    out = []
+    for s in sec.items_indexed():
+        sid = str(s.get("id"))
+        posts = {}
+        for key, label in DEPLOY_POSTS:
+            st = s.section(key)
+            items = st.items_indexed() if st else []
+            if items:
+                taken = sum(1 for i in items if str(i.get("Entity.i", "-1")) != "-1")
+                posts[label] = (taken, len(items))
+        rid = s.get("Room.i")
+        out.append({
+            "id": int(sid), "x1": int(s.num("TopLeft.x", 0)), "y1": int(s.num("TopLeft.y", 0)),
+            "x2": int(s.num("BottomRight.x", 0)), "y2": int(s.num("BottomRight.y", 0)),
+            "room": room_type.get(str(rid)) if rid is not None else None,
+            "outside": str(s.get("Outside", "false")).lower() == "true",
+            "zone": s.get("Zone") or "Shared", "posts": posts, "priority": priority.get(sid, 0),
+            "custom": [n for n in range(12) if str(s.get(f"CustomZone{n}", "false")).lower() == "true"],
+        })
+    return out
+
+
 def tunnels(root: Section) -> list[dict]:
     """Escape tunnels from the save's Tunnels section ("x y" cells with Dug / Entrance / Discovered).
     Live day 28: 9 escapes in a day through a tunnel from a dormitory (107,18) to 109,7, outside the fence."""

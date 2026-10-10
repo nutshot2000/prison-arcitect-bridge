@@ -61,8 +61,18 @@ GRANT_PART_HINT = {"accountant": "`unlock accountant`", "psychologist": "`unlock
                    "doctors": "`unlock doctor`", "ward": "`room infirmary x1 y1 x2 y2`",
                    "foreman": "`unlock foreman`", "chief": "`unlock chief`"}
 
+# Deployment zone values (the save's Zone field; "CanEnterCell: Can't enter Zone<X>" in the game)
+DEPLOY_ZONE_MEANING = {"MinSecOnly": "min-sec prisoners only", "MedSecOnly": "normal (med-sec) prisoners only",
+                       "MaxSecOnly": "max-sec prisoners only", "ProtectedOnly": "protected prisoners only",
+                       "SuperMaxOnly": "supermax prisoners only", "StaffOnly": "no prisoners",
+                       "Unlocked": "doors unlocked", "VisitorOnly": "visitors only"}
+DEPLOY_ZONE_ONE_CATEGORY = {"MinSecOnly", "MedSecOnly", "MaxSecOnly", "ProtectedOnly", "SuperMaxOnly", "StaffOnly",
+                            "VisitorOnly"}
+SHARED_ROOMS = {"Yard", "Canteen", "Shower", "CommonRoom", "Library", "Chapel", "Visitation", "MedicalWard",
+                "Classroom", "Workshop", "Laundry", "Kitchen"}
+
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols", "catalog"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols", "catalog", "deployment"}
 
 # `room` kinds -> the game's room type (keep in step with KIND_ROOM in world.lua)
 KIND_ROOM = {"kitchen": "Kitchen", "canteen": "Canteen", "shower": "Shower", "yard": "Yard", "holding": "HoldingCell",
@@ -190,6 +200,9 @@ VERB_HELP = {
                          "  available, locked (prerequisites), accepted or completed."),
     "grant": ("grant <name>", "Accept a grant, e.g. `grant bootstraps`. The advance is paid at once; the rest when its\n"
                               "  objectives (on the game's To-do list) are met. Start with bootstraps and Administration."),
+    "deployment": ("deployment [all]",
+                   "Deployment per sector (room): security zone (Shared, MaxSecOnly, StaffOnly...), staff posts\n"
+                   "  (guards, dog handlers, cooks... and how many are manned) and priority. Read-only for now."),
     "patrols": ("patrols", "Guard patrol routes (blue/magenta lines, priority 0-2) and who is assigned to them."),
     "patrol": ("patrol route <blue|magenta> <x1> <y1> <x2> <y2> | patrol assign <guard|dog> <x> <y> |\n"
                "  patrol priority <up|down> <x> <y> | patrol clear <x1> <y1> <x2> <y2>",
@@ -1126,6 +1139,41 @@ class Easy:
             r = self.call("patrol", "priority", args[0], *self._ints(*args[1:]))
             return f"route priority now {r['priority']} ({r['route_cells']} connected cells)."
         raise EasyError("usage: " + VERB_HELP["patrol"][0])
+
+    def v_deployment(self, which: str = "") -> str:
+        """Deployment per sector from a fresh save (read-only: the bridge cannot change deployment yet)."""
+        from ..state.report import deployment
+        sectors = deployment(self.snapshot(max_age=0))
+        if not sectors:
+            return "No sectors in the save."
+        show_all = which.lower() == "all"
+        lines = []
+        for s in sorted(sectors, key=lambda s: (s["room"] or "~", s["id"])):
+            set_up = s["zone"] != "Shared" or s["posts"] or s["priority"] or s["custom"]
+            if not (show_all or set_up):
+                continue
+            name = s["room"] or ("outdoors" if s["outside"] else "area")
+            bits = []
+            if s["zone"] != "Shared":
+                meaning = DEPLOY_ZONE_MEANING.get(s["zone"], "")
+                warn = ""
+                if s["zone"] in DEPLOY_ZONE_ONE_CATEGORY and s["room"] in SHARED_ROOMS:
+                    warn = f" - WARNING: other prisoners can no longer use this {s['room']}"
+                bits.append(f"zone {s['zone']}" + (f" ({meaning})" if meaning else "") + warn)
+            for who, (taken, total) in s["posts"].items():
+                bits.append(f"{total} {who} post{'s' if total > 1 else ''} ({taken} manned)")
+            if s["priority"]:
+                bits.append(f"priority {s['priority']}")
+            if s["custom"]:
+                bits.append("custom zones " + ",".join(map(str, s["custom"])))
+            lines.append(f"{name} (sector {s['id']}, x {s['x1']}..{s['x2']} y {s['y1']}..{s['y2']}): "
+                         + ("; ".join(bits) if bits else "Shared, no posts"))
+        if not lines:
+            lines.append(f"Nothing set up: all {len(sectors)} sectors are Shared with no staff posts.")
+        elif not show_all:
+            lines.append(f"({len(sectors)} sectors in total; `deployment all` lists every one.)")
+        lines.append("Read-only: change it in the game's Deployment tab (the bridge cannot write deployment yet).")
+        return "\n".join(lines)
 
     def v_tunnels(self, action: str = "") -> str:
         """Escape tunnels from a fresh save; `tunnels fill` orders workmen to fill every dug cell."""

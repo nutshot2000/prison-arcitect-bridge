@@ -229,3 +229,61 @@ BEGIN Tunnels
 END
 """)
         self.assertEqual(tunnel_cells(root), [(116, 77), (117, 77)])
+
+
+class DeploymentTests(unittest.TestCase):
+    """Sectors / DeploymentSchedule as the game saved them on 10 Oct 2026 (shape only, values made up)."""
+    SAVE = """
+BEGIN Rooms
+    BEGIN "[i 0]"  Id.i 3  RoomType Yard  END
+    BEGIN "[i 1]"  Id.i 4  RoomType Canteen  END
+END
+BEGIN Sectors
+    NextSectorId 9
+    BEGIN Sectors
+        Size 9
+        BEGIN "[i 0]"
+            id 0  TopLeft.x 0  TopLeft.y 0  BottomRight.x 9  BottomRight.y 9  Outside true
+            BEGIN Stations   Size 0  END
+        END
+        BEGIN "[i 5]"
+            id 5  TopLeft.x 1  TopLeft.y 2  BottomRight.x 3  BottomRight.y 4  Room.i 3  Zone MaxSecOnly
+            BEGIN DogStations
+                Size 1
+                BEGIN "[i 0]"  Entity.i -1  Entity.u -1  LastOccupied 0.0  END
+            END
+            CustomZone2 true
+        END
+        BEGIN "[i 8]"
+            id 8  TopLeft.x 5  TopLeft.y 5  BottomRight.x 7  BottomRight.y 7  Room.i 4
+            BEGIN Stations
+                Size 2
+                BEGIN "[i 0]"  Entity.i 40  Entity.u 77  END
+                BEGIN "[i 1]"  Entity.i -1  Entity.u -1  END
+            END
+        END
+    END
+END
+BEGIN DeploymentSchedule
+    BEGIN ChosenSchedule END
+    BEGIN Schedules
+        BEGIN "Schedule 0"
+            BEGIN i  SectorId 5  NumGuards 0  NumDogs 1  PriorityLevel 2  END
+        END
+    END
+END
+"""
+
+    def test_sectors(self):
+        from pa_agent.state.report import deployment
+        secs = {s["id"]: s for s in deployment(parse_prison(self.SAVE))}
+        self.assertEqual(set(secs), {0, 5, 8})
+        self.assertEqual(secs[0]["zone"], "Shared")
+        self.assertTrue(secs[0]["outside"])
+        self.assertEqual(secs[0]["posts"], {})
+        yard = secs[5]
+        self.assertEqual((yard["room"], yard["zone"], yard["priority"]), ("Yard", "MaxSecOnly", 2))
+        self.assertEqual(yard["posts"], {"dog handler": (0, 1)})
+        self.assertEqual(yard["custom"], [2])
+        self.assertEqual(secs[8]["room"], "Canteen")
+        self.assertEqual(secs[8]["posts"], {"guard": (1, 2)})

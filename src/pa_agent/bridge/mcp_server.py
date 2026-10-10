@@ -133,6 +133,8 @@ class Server:
         verb("pa_emergency", "emergency", "The game's Emergencies buttons: shakedown (contraband), tunnelsearch (finds "
              "and fills escape tunnels), drugbust (narcotics), stop (ends the running search), bangup / lockdown "
              "(toggle; call again to lift), status.", {"action": STR}, [], ["action"])
+        verb("pa_deployment", "deployment", "Deployment per sector (room): security zone (Shared, MaxSecOnly, StaffOnly...), staff posts (guards, dog handlers, cooks, and how many are manned) and priority. Read-only. "
+             "which: all lists every sector.", {"which": STR}, [], ["which"])
         verb("pa_patrols", "patrols", "Guard patrol routes (blue/magenta, priority 0-2) and the guards / dog handlers "
              "assigned to them.", {}, [], [])
         verb("pa_patrol", "patrol", "Guard patrols (Deployment > Patrols). action route: draw a straight line x1,y1 -> "
