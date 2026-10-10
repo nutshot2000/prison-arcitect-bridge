@@ -10,7 +10,7 @@
 --
 -- Without the DLL this script does nothing.
 
-local VERSION = "0.5.1"
+local VERSION = "0.6.0"
 local MAX_REQUESTS_PER_TICK = 64
 local DebugOut = Game.DebugOut  -- patched by the DLL; native actions go through it
 local NATIVE = false            -- DLL 0.3+ with verified game functions (zone/save/speed/research)
@@ -2146,6 +2146,64 @@ function api.read_letter()
 end
 doc("read_letter", "", "Mark the CEO's letter as read (clears 'Read the CEO's letter' on the To-do list).",
     "api.read_letter()")
+
+-- Guard patrols (bridge DLL 0.6): the game's Deployment > Patrols tab. Routes are cells of colour blue (0)
+-- or magenta (1); guards / dog handlers are assigned to a route cell; Prioritize raises a whole connected
+-- route one level (0..2). The DLL mirrors the game's own drag code (see docs/validation.md, follow-up 9).
+local PATROL_COLOUR = { blue = 0, magenta = 1 }
+-- entity codes the Assign tools use (tool 0xc..0xf -> 0x69, 0x78, 0x6b, 0x6f); names measured live
+-- 10 Oct 2026 against the save's `EntityType` (0x6b/0x6f, likely ArmedGuard and Orderly, not checked yet)
+local PATROL_WHO = { guard = 105, dog = 120 }
+
+local function patrol_native(cmd)
+    local r = native(cmd)
+    if type(r) ~= "string" then error("patrols need bridge DLL 0.6 (scripts\\install_bridge.ps1 with the game closed)", 0) end
+    if string.sub(r, 1, 6) == "error:" then error(string.sub(r, 8), 0) end
+    return r
+end
+
+function api.patrols()
+    local r = patrol_native("patrols")
+    local cells, stations = {}, {}
+    local cpart, spart = string.match(r, "^cells(.-);stations(.*)$")
+    local names = { [0] = "blue", [1] = "magenta", [2] = "both" }
+    for x, y, t, p in string.gmatch(cpart or "", "(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+)") do
+        cells[#cells + 1] = { x = tonumber(x), y = tonumber(y), colour = names[tonumber(t)] or t, priority = tonumber(p) }
+    end
+    local who = {}
+    for k, v in pairs(PATROL_WHO) do who[v] = k end
+    for x, y, c, t, p, s in string.gmatch(spart or "", "(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+)") do
+        stations[#stations + 1] = { x = tonumber(x), y = tonumber(y), who = who[tonumber(c)] or ("code " .. c),
+                                    colour = names[tonumber(t)] or t, priority = tonumber(p), schedule = tonumber(s) }
+    end
+    return { cells = cells, stations = stations }
+end
+doc("patrols", "", "Patrol route cells (colour, priority) and the guards / dog handlers assigned to them.", "api.patrols()")
+
+function api.patrol(action, a, b, c, d, e)
+    if action == "route" then
+        local t = PATROL_COLOUR[a] or tonumber(a)
+        if t ~= 0 and t ~= 1 then error("route colour: blue or magenta", 0) end
+        local r = patrol_native(string.format("patrol:route %d %d %d %d %d", t, b, c, d, e))
+        return { route = a, cells_added = tonumber(string.match(r, "(%d+)$")) }
+    elseif action == "clear" then
+        local r = patrol_native(string.format("patrol:clear %d %d %d %d", a, b, c, d))
+        return { cells_cleared = tonumber(string.match(r, "(%d+)$")) }
+    elseif action == "assign" then
+        local code = PATROL_WHO[a] or tonumber(a)
+        if not code then error("assign: guard or dog (or an entity code)", 0) end
+        patrol_native(string.format("patrol:assign %d %d %d", code, b, c))
+        return { assigned = a, x = b, y = c }
+    elseif action == "priority" then
+        if a ~= "up" and a ~= "down" then error("priority up|down x y", 0) end
+        local r = patrol_native(string.format("patrol:priority %s %d %d", a, b, c))
+        local lvl, n = string.match(r, "(%d+) (%d+)$")
+        return { priority = tonumber(lvl), route_cells = tonumber(n) }
+    end
+    error("patrol route <blue|magenta> x1 y1 x2 y2 | clear x1 y1 x2 y2 | assign <guard|dog> x y | priority <up|down> x y", 0)
+end
+doc("patrol", "action, ...", "Draw a patrol route (straight line), clear one, assign a guard or dog handler to a " ..
+    "route cell, or raise/lower a route's priority.", "api.patrol(\"route\", \"blue\", 96, 48, 117, 48)")
 
 function api.objectives()
     local r = native("objectives")

@@ -120,7 +120,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.5.1"
+#define BRIDGE_VERSION "0.6.0"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -447,6 +447,11 @@ static const sig_t NATIVE_SIGS[] = {
     {0x1405cdd20ULL, {0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54}}, /* AcceptGrant */
     {0x1405cdbc0ULL, {0x40, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xE8, 0xB5, 0xFE, 0xFF}}, /* grant prerequisites met */
     {0x1406717f0ULL, {0x40, 0x53, 0x57, 0x41, 0x54, 0x41, 0x55, 0x48, 0x83, 0xEC}}, /* remove objective */
+    {0x140681f80ULL, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0xC7, 0x44, 0x24}}, /* patrol cell */
+    {0x140683dd0ULL, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18}}, /* patrol add station */
+    {0x140683ed0ULL, {0x44, 0x88, 0x4C, 0x24, 0x20, 0x53, 0x56, 0x41, 0x54, 0x41}}, /* patrol remove station */
+    {0x140684330ULL, {0x4C, 0x89, 0x4C, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18}}, /* patrol connected route */
+    {0x140684170ULL, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83}}, /* patrol route priority */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -883,6 +888,124 @@ static int native_readletter(void *L) {
     return push_str(L, *(i32 *)(w + 0xc88 + 0x3c) < before ? "ok" : "ok (it was not on the list)");
 }
 
+/* ---- guard patrols (Deployment > Patrols), found with REA/Ghidra 10 Oct 2026 ----
+ * PatrolSystem = world+0x1228. Drags are applied by 0x1404d3470(?, drag), which this mirrors.
+ * Route cells: +0x30, 0x30 bytes each, index y*W+x (+W*H above ground); 0x140681f80(ps,x,y,z) returns
+ *   one: Set u8 @0x18, @0x1c = 0, PatrolType i32 @0x28 (-1 none, 0 blue, 1 magenta, 2 both),
+ *   PriorityLevel i32 @0x2c (0..2). +0x58 = 1 after a cell change.
+ * Stations (Assign tools): +0x38, count +0x44, 11 i32 each: x, y, z(u8), entity code, 0, -1, -1,
+ *   Schedule (-1), PatrolType, PriorityLevel, ...; +0x59 = 1 after a change.
+ *   Add 0x140683dd0(ps,x,y,z,schedule,code) (no-op if the cell has one; schedule 0 = -1);
+ *   remove 0x140683ed0(ps,x,y,z,0,type or -1). The UI's codes: tool 0xc->0x69, 0xd->0x78, 0xe->0x6b,
+ *   0xf->0x6f (which is Guard/DogHandler: read them back with `patrols`).
+ * Connected route: 0x140684330(ps,&xy,z,&prev{-1,-1,0},type) fills +0x48 (16 bytes each, count +0x54);
+ *   0x140684170(ps,&xy,z,type,up) then moves the whole route's PriorityLevel one step (max 2). */
+typedef u8 *(*patrol_cell_t)(void *ps, i32 x, i32 y, u8 z);
+typedef void (*patrol_add_station_t)(void *ps, i32 x, i32 y, u8 z, i32 schedule, i32 code);
+typedef void (*patrol_rm_station_t)(void *ps, i32 x, i32 y, u64 z, i32 keep, i32 type);
+typedef void (*patrol_route_t)(void *ps, i32 *xy, u8 z, void *prev, i32 type);
+typedef void (*patrol_priority_t)(void *ps, i32 *xy, u8 z, i32 type, u8 up);
+static const patrol_cell_t patrol_cell = (patrol_cell_t)0x140681f80ULL;
+static const patrol_add_station_t patrol_add_station = (patrol_add_station_t)0x140683dd0ULL;
+static const patrol_rm_station_t patrol_rm_station = (patrol_rm_station_t)0x140683ed0ULL;
+static const patrol_route_t patrol_route = (patrol_route_t)0x140684330ULL;
+static const patrol_priority_t patrol_priority = (patrol_priority_t)0x140684170ULL;
+#define PATROL_OFF 0x1228
+
+static int native_patrols(void *L) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *ps = w + PATROL_OFF;
+    static char out[16000]; sbuf b = {out, 0, sizeof out};
+    i32 W = *(i32 *)(w + 0x60), H = *(i32 *)(w + 0x64), shown = 0;
+    sb_str(&b, "cells");
+    if (*(u8 **)(ps + 0x30)) for (i32 y = 0; y < H; y++) for (i32 x = 0; x < W; x++) {
+        u8 *c = patrol_cell(ps, x, y, 0);
+        if (!c[0x18] || shown >= 1500) continue;
+        sb_str(&b, " "); sb_int(&b, x); sb_str(&b, ","); sb_int(&b, y); sb_str(&b, ",");
+        sb_int(&b, *(i32 *)(c + 0x28)); sb_str(&b, ","); sb_int(&b, *(i32 *)(c + 0x2c));
+        shown++;
+    }
+    i32 n = *(i32 *)(ps + 0x44); i32 *st = *(i32 **)(ps + 0x38);
+    sb_str(&b, ";stations");
+    for (i32 i = 0; st && i < n && i < 200; i++, st += 11) {
+        sb_str(&b, " "); sb_int(&b, st[0]); sb_str(&b, ","); sb_int(&b, st[1]); sb_str(&b, ",");
+        sb_int(&b, st[3]); sb_str(&b, ","); sb_int(&b, st[8]); sb_str(&b, ","); sb_int(&b, st[9]);
+        sb_str(&b, ","); sb_int(&b, st[7]);
+    }
+    return push_str(L, out);
+}
+
+/* patrol:route <type> x1 y1 x2 y2 | patrol:clear x1 y1 x2 y2 | patrol:assign <code> x y |
+ * patrol:priority <up|down> x y. Lines are straight (x1 == x2 or y1 == y2). */
+static int native_patrol(void *L, const char *s, size_t n) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    u8 *ps = w + PATROL_OFF;
+    if (!*(u8 **)(ps + 0x30)) return push_str(L, "error: patrol system not ready");
+    const char *end = s + n;
+    char out[96]; sbuf b = {out, 0, sizeof out};
+    i32 a, x1, y1, x2, y2;
+    if (starts(s, n, "route ") || starts(s, n, "clear ")) {
+        int clear = s[0] == 'c'; s += 6;
+        if (!clear && (!parse_int(&s, end, &a) || a < 0 || a > 1)) return push_str(L, "error: route type 0 (blue) or 1 (magenta)");
+        if (!parse_int(&s, end, &x1) || !parse_int(&s, end, &y1) || !parse_int(&s, end, &x2) || !parse_int(&s, end, &y2))
+            return push_str(L, "error: <x1> <y1> <x2> <y2>");
+        if (x1 != x2 && y1 != y2) return push_str(L, "error: a straight line (same x or same y)");
+        if (!in_map(w, x1, y1) || !in_map(w, x2, y2)) return push_str(L, "error: outside the map");
+        i32 dx = x2 > x1 ? 1 : x2 < x1 ? -1 : 0, dy = y2 > y1 ? 1 : y2 < y1 ? -1 : 0, k = 0;
+        for (i32 x = x1, y = y1;; x += dx, y += dy) {
+            u8 *c = patrol_cell(ps, x, y, 0);
+            if (clear) {
+                if (c[0x18]) { patrol_rm_station(ps, x, y, 0, 0, -1); k++; }
+                c[0x18] = 0; *(i32 *)(c + 0x1c) = 0; *(i32 *)(c + 0x28) = -1; *(i32 *)(c + 0x2c) = 0;
+            } else {
+                i32 t = *(i32 *)(c + 0x28);
+                if (!c[0x18]) k++;
+                c[0x18] = 1; *(i32 *)(c + 0x1c) = 0;
+                *(i32 *)(c + 0x28) = (t < 0 || t == a) ? a : 2;
+            }
+            if (x == x2 && y == y2) break;
+        }
+        ps[0x58] = 1; ps[0x59] = 1;
+        if (!clear) {  /* as the drag does at its end: rebuild the connected route from the last cell */
+            i32 xy[2] = {x2, y2}; i32 prev[3] = {-1, -1, 0};
+            *(i32 *)(ps + 0x54) = 0;
+            patrol_route(ps, xy, 0, prev, a);
+        }
+        sb_str(&b, "ok "); sb_int(&b, k); return push_str(L, out);
+    }
+    if (starts(s, n, "assign ")) {
+        s += 7;
+        if (!parse_int(&s, end, &a) || !parse_int(&s, end, &x1) || !parse_int(&s, end, &y1))
+            return push_str(L, "error: assign <code> <x> <y>");
+        if (a != 0x69 && a != 0x6b && a != 0x6f && a != 0x78) return push_str(L, "error: unknown assign code");
+        if (!in_map(w, x1, y1)) return push_str(L, "error: outside the map");
+        if (!patrol_cell(ps, x1, y1, 0)[0x18]) return push_str(L, "error: no patrol route on that cell");
+        i32 before = *(i32 *)(ps + 0x44);
+        patrol_add_station(ps, x1, y1, 0, 0, a);
+        return push_str(L, *(i32 *)(ps + 0x44) > before ? "ok" : "error: that cell already has an assignment");
+    }
+    if (starts(s, n, "priority ")) {
+        s += 9; while (s < end && *s == ' ') s++;
+        int up = starts(s, (size_t)(end - s), "up");
+        if (!up && !starts(s, (size_t)(end - s), "down")) return push_str(L, "error: priority up|down <x> <y>");
+        s += up ? 2 : 4;
+        if (!parse_int(&s, end, &x1) || !parse_int(&s, end, &y1)) return push_str(L, "error: priority up|down <x> <y>");
+        if (!in_map(w, x1, y1)) return push_str(L, "error: outside the map");
+        u8 *c = patrol_cell(ps, x1, y1, 0);
+        if (!c[0x18]) return push_str(L, "error: no patrol route on that cell");
+        i32 t = *(i32 *)(c + 0x28), xy[2] = {x1, y1}, prev[3] = {-1, -1, 0};
+        *(i32 *)(ps + 0x54) = 0;
+        patrol_route(ps, xy, 0, prev, t);
+        patrol_priority(ps, xy, 0, t, (u8)up);
+        ps[0x58] = 1; ps[0x59] = 1;
+        sb_str(&b, "ok "); sb_int(&b, *(i32 *)(c + 0x2c)); sb_str(&b, " "); sb_int(&b, *(i32 *)(ps + 0x54));
+        return push_str(L, out);
+    }
+    return push_str(L, "error: patrol:route|clear|assign|priority");
+}
+
 /* live objectives (world+0xc88, +0x30/+0x3c; name std::string @0, parent @0x20) */
 static int native_objectives(void *L) {
     u8 *w = get_world();
@@ -1031,6 +1154,8 @@ static int __cdecl bridge_debugout(void *L) {
         if (starts(s, n, "grant:")) return native_grant(L, s + 6, n - 6);
         if (starts(s, n, "objectives")) return native_objectives(L);
         if (starts(s, n, "readletter")) return native_readletter(L);
+        if (starts(s, n, "patrols")) return native_patrols(L);
+        if (starts(s, n, "patrol:")) return native_patrol(L, s + 7, n - 7);
         return 0;
     }
     out_log(s, n);

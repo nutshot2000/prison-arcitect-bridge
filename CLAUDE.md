@@ -6,7 +6,7 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 
 - Easy front door: `.\prison.ps1 <verb>` = `.\.venv\Scripts\pa-agent.exe play <verb>` (help, status, next, report,
   look, space, room, cells, fence, station, place, hookup, power, switch, utilmap, zone, rooms, hire, research,
-  intake, pause, resume, wait, progress, save, screenshot, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
+  intake, pause, resume, wait, progress, save, screenshot, patrols, patrol, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
 - Loop: `status` → `next` → one action → `wait 60` → `report`. Set `intake beds` first.
 - `report` / `utilmap` / `rooms` / `next` save the game (`pa_agent_snapshot`) and parse it
   (`src/pa_agent/state/report.py`). `screenshot` gets the last rendered frame from the DLL (works behind windows).
@@ -17,7 +17,7 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 
 - `native/pa_bridge.c` → GLU32.dll proxy (build: `sh native/build.sh`, zig or clang). Patches `Game.DebugOut`,
   TCP 127.0.0.1:8972 (8 clients), native actions via `Game.DebugOut("\1cmd")`: zone, roomtypes, speed/setspeed,
-  save, research, intake, screenshot. Addresses are for Steam build r11056 only and are byte-checked at start.
+  save, research, intake, screenshot, patrols/patrol (0.6). Addresses are for Steam build r11056 only and are byte-checked at start.
 - `mod/ai_bridge/data/world.lua` → `api.*` (room, cell_block, perimeter, hookup, utilities, switch, hire, zone...).
   Test offline: `python <lupa runner> mod/test_world.lua mod/ai_bridge/data/world.lua` (see docs/validation.md).
 - `src/pa_agent/bridge/` → client.py (TCP), easy.py (verbs + hints), mcp_server.py, image.py (BMP→PNG).

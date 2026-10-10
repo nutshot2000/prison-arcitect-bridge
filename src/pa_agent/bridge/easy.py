@@ -56,7 +56,7 @@ def _counts(d: dict | None) -> str:
 
 
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols"}
 
 # `room` kinds -> the game's room type (keep in step with KIND_ROOM in world.lua)
 KIND_ROOM = {"kitchen": "Kitchen", "canteen": "Canteen", "shower": "Shower", "yard": "Yard", "holding": "HoldingCell",
@@ -173,6 +173,12 @@ VERB_HELP = {
                          "  available, locked (prerequisites), accepted or completed."),
     "grant": ("grant <name>", "Accept a grant, e.g. `grant bootstraps`. The advance is paid at once; the rest when its\n"
                               "  objectives (on the game's To-do list) are met. Start with bootstraps and Administration."),
+    "patrols": ("patrols", "Guard patrol routes (blue/magenta lines, priority 0-2) and who is assigned to them."),
+    "patrol": ("patrol route <blue|magenta> <x1> <y1> <x2> <y2> | patrol assign <guard|dog> <x> <y> |\n"
+               "  patrol priority <up|down> <x> <y> | patrol clear <x1> <y1> <x2> <y2>",
+               "Deployment > Patrols. Draw a straight route line, then assign a guard or dog handler to a cell on\n"
+               "  it (one assignment per cell; each one takes a guard off other duties). priority moves the whole\n"
+               "  connected route one level (max 2). Needs the Patrols research (Dogs for dog handlers)."),
     "emergency": ("emergency <shakedown|tunnelsearch|drugbust|stop|bangup|lockdown|status>",
                   "The game's Emergencies buttons. tunnelsearch finds and fills escape tunnels, shakedown finds\n"
                   "  contraband, drugbust finds narcotics (one search at a time; `stop` ends it). bangup/lockdown\n"
@@ -966,6 +972,34 @@ class Easy:
         r = self.call("emergency", action)
         on = [k for k, v in r["state"].items() if v]
         return f"{r['note']} Active now: {', '.join(on) if on else 'nothing'}."
+
+    def v_patrols(self) -> str:
+        r = self.call("patrols")
+        if not r["cells"]:
+            return "No patrol routes. `patrol route blue <x1> <y1> <x2> <y2>` draws one."
+        runs: dict[tuple, list[tuple[int, int]]] = {}
+        for c in r["cells"]:
+            runs.setdefault((c["colour"], c["priority"]), []).append((c["x"], c["y"]))
+        lines = [f"{col} route, priority {pr}: {len(cells)} cells, x {min(x for x, _ in cells)}..{max(x for x, _ in cells)}"
+                 f" y {min(y for _, y in cells)}..{max(y for _, y in cells)}" for (col, pr), cells in sorted(runs.items())]
+        for s in r["stations"]:
+            lines.append(f"{s['who']} assigned at {s['x']},{s['y']} ({s['colour']}, priority {s['priority']})")
+        return "\n".join(lines)
+
+    def v_patrol(self, action: str = "", *args: str) -> str:
+        if action == "route" and len(args) == 5:
+            r = self.call("patrol", "route", args[0], *self._ints(*args[1:]))
+            return f"{r['route']} route: {r['cells_added']} new cells. Next: `patrol assign guard <x> <y>` on it."
+        if action == "clear" and len(args) == 4:
+            r = self.call("patrol", "clear", *self._ints(*args))
+            return f"cleared {r['cells_cleared']} route cells (and their assignments)."
+        if action == "assign" and len(args) == 3:
+            self.call("patrol", "assign", args[0], *self._ints(*args[1:]))
+            return f"{args[0]} assigned at {args[1]},{args[2]}: one will walk the route when on duty."
+        if action == "priority" and len(args) == 3:
+            r = self.call("patrol", "priority", args[0], *self._ints(*args[1:]))
+            return f"route priority now {r['priority']} ({r['route_cells']} connected cells)."
+        raise EasyError("usage: " + VERB_HELP["patrol"][0])
 
     def v_tunnels(self, action: str = "") -> str:
         """Escape tunnels from a fresh save; `tunnels fill` orders workmen to fill every dug cell."""

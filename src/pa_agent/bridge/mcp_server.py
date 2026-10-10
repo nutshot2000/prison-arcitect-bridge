@@ -133,6 +133,13 @@ class Server:
         verb("pa_emergency", "emergency", "The game's Emergencies buttons: shakedown (contraband), tunnelsearch (finds "
              "and fills escape tunnels), drugbust (narcotics), stop (ends the running search), bangup / lockdown "
              "(toggle; call again to lift), status.", {"action": STR}, [], ["action"])
+        verb("pa_patrols", "patrols", "Guard patrol routes (blue/magenta, priority 0-2) and the guards / dog handlers "
+             "assigned to them.", {}, [], [])
+        verb("pa_patrol", "patrol", "Guard patrols (Deployment > Patrols). action route: draw a straight line x1,y1 -> "
+             "x2,y2 in colour blue|magenta (a); assign: put a guard|dog (a) on route cell x1,y1; priority: up|down (a) "
+             "for the route through x1,y1 (max 2); clear: remove route cells x1,y1 -> x2,y2 and their assignments. "
+             "Needs the Patrols research.",
+             {"action": STR, "a": STR, **RECT}, ["action"], ["action", "a", *RECT])
         verb("pa_search", "search", "Guards search the furniture around a cell (default radius 2): finds contraband and "
              "tunnel entrances (pa_report lists TUNNEL entrances); discovered tunnels get filled.",
              {"x": INT, "y": INT, "radius": INT}, ["x", "y"], ["x", "y", "radius"])

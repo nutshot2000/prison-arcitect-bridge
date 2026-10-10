@@ -285,3 +285,35 @@ Tests: 52 Python tests and `mod/test_world.lua` (LuaJIT via lupa 2.8) pass.
   ordered and `tunnels` reported none ~1 game hour later. New `api.fill_tunnels`, verb `tunnels [fill]` (MCP
   `pa_tunnels`); `auto` fills tunnels; `report` now says `tunnels fill`.
 
+## Follow-up 9 — 10 October 2026: guard patrols, DLL 0.6 (found with REA + Ghidra, checked live)
+
+Static analysis of `Prison Architect64.exe` (r11056, sha256 cc460fc4...) with REA 6.3.0 on Ghidra 12.1.4; the
+known AcceptGrant address 0x1405cdd20 resolves there, so the build matches.
+
+- Save format (diffs of saves before/after drawing by hand, prison day 13): section `Patrols` lists route cells
+  `"x y 0"  Set true  PatrolType n  [PriorityLevel n]` (Blue Patrol = 0, Magenta Patrol = 1; PriorityLevel omitted
+  when 0) and `Patrols > Stations`, one per Assign click: `Pos.x Pos.y Pos.aboveGround  LastVisit  EntityType
+  Guard|DogHandler  PatrolType  PriorityLevel  Schedule -1  Visitor.i/u` (a guard was visiting within minutes;
+  Visitor -1 = nobody yet). Each Prioritize drag raises the whole route one level (user: blue once -> 1, magenta
+  twice -> 2), and its stations take the same level. Assign Armed Guards needs Armoury.
+- Code: PatrolSystem = world+0x1228; Patrols-tab drags are applied ~40 cells/s by 0x1404d3470(?, drag).
+  Cell records +0x30 (0x30 bytes, index y*W+x, +W*H above ground; 0x140681f80(ps,x,y,z) returns one):
+  Set u8 @0x18, @0x1c = 0, PatrolType i32 @0x28 (-1 none, 0 blue, 1 magenta, 2 both), PriorityLevel i32 @0x2c
+  (max 2); ps+0x58 = 1 after changes. Stations +0x38 (count +0x44, 11 i32: x, y, z, entity code, 0, -1, -1,
+  Schedule, PatrolType, PriorityLevel, ...), ps+0x59 = 1 after changes; add 0x140683dd0(ps,x,y,z,schedule,code),
+  remove 0x140683ed0(ps,x,y,z,0,type|-1). Assign tools 0xc..0xf use codes 0x69, 0x78, 0x6b, 0x6f; live:
+  105 (0x69) = Guard, 120 (0x78) = DogHandler (0x6b/0x6f probably ArmedGuard/Orderly, untested).
+  Connected route: 0x140684330(ps,&xy,z,&prev{-1,-1,0},type) fills +0x48 (count +0x54); 0x140684170(ps,&xy,z,type,up)
+  moves that route's PriorityLevel and its stations' one step.
+- Correction: 0x1404d5260 (writes world cells +0x40/+0x41/+0xcc, tools 0x13/0x14) is the Deployment tab's
+  painter, not patrols. "PatrolSet"/"PatrolClear" are only sound events (bank `_Deployment`).
+- DLL 0.6.0: `patrols` (read) and `patrol:route|clear|assign|priority`, mirroring 0x1404d3470; Lua
+  `api.patrols()` / `api.patrol(...)`; verbs `patrols`, `patrol` (MCP `pa_patrols`, `pa_patrol`). Live on the
+  day-13 prison: `patrols` matched the save (42 cells, Guard 105 at 105,54, DogHandler 120 at 108,48);
+  `patrol route magenta 96 51 101 51` + `assign guard 98 51` + `priority up 98 51` -> the save had the 6 cells
+  `PatrolType 1 PriorityLevel 1` and a Guard station with a guard already visiting; the other routes kept their
+  levels; `patrol clear 96 51 101 51` removed the cells and the station (save checked). No crash, game kept running.
+- Not done: `both` (type 2) routes, diagonal/L lines (draw two straight ones), above-ground cells, Armed/Orderly
+  codes, deployment sectors (the Deployment tab).
+
+Tests: 57 Python tests and `mod/test_world.lua` (LuaJIT via lupa 2.8) pass.
