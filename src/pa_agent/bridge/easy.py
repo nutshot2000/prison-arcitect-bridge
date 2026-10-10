@@ -55,6 +55,12 @@ def _counts(d: dict | None) -> str:
     return ", ".join(f"{k} {v}" for k, v in sorted(d.items()))
 
 
+# grant parts (objective name after the grant's) -> what to run; keys are the part's first word, lower case
+GRANT_PART_HINT = {"accountant": "`unlock accountant`", "psychologist": "`unlock psychologist`",
+                   "offices": "`room office x1 y1 x2 y2` (6x6)", "warden": "`hire Warden`",
+                   "doctors": "`unlock doctor`", "ward": "`room infirmary x1 y1 x2 y2`",
+                   "foreman": "`unlock foreman`", "chief": "`unlock chief`"}
+
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
                    "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols"}
 
@@ -435,16 +441,59 @@ class Easy:
         have: dict[str, int] = {}
         for r in self._rooms_from(root):
             have[r["type"]] = have.get(r["type"], 0) + 1
+        live = self._todo_live()
+        if live:
+            # the panel's own counts replace the save-based estimate (Energy < 15 overcounted: 6 vs the panel's 3)
+            items = [i for i in items if not i.startswith("Staff exhausted")]
+            if live["exhausted"] > 0:
+                items.append(f"Staff exhausted: {live['exhausted']} ({live['resting']} resting)")
         lines = []
         for i in items:
             act = todo_action(i, have)
+            if live and i.startswith("Prisoner intake"):
+                i += {"closed": ": CLOSED to new inmates (see the game's Intake Report)",
+                      "strike": ": closed by a guard strike", "riot": ": closed by a riot"}.get(
+                    live["intake"], f": {live['arrivals']} arriving at {live['arrival_hour']:02d}:00")
             lines.append(f"- {i}" + (f"\n    do: {act}" if act else ""))
+        lines += self._todo_grants()
         sit = situation(root)
         needs = [(k, v) for k, v in sit.get("worst_needs", []) if v >= 50 and k in NEED_FIX]
         if needs:
             lines.append("Prisoner needs (0-100, high = bad):")
             lines += [f"- {k} {v}\n    do: {NEED_FIX[k]}" for k, v in needs]
         return "\n".join(lines) if lines else "nothing on the game's to-do list"
+
+    def _todo_live(self) -> dict | None:
+        """The To-do panel's own figures (DLL 0.6.1); None with an older DLL."""
+        try:
+            return self.call("todo_state")
+        except BridgeError:
+            return None
+
+    def _todo_grants(self) -> list[str]:
+        """Accepted grants as the panel lists them: each part crossed off or still to do (DLL 0.6.1)."""
+        try:
+            objs = self.call("objectives")["objectives"]
+        except BridgeError:
+            return []
+        if not objs or "advance" not in objs[0]:
+            return []
+        out = []
+        for g in objs:
+            if g.get("parent") or not g["name"].startswith("Grant_"):
+                continue
+            parts = [p for p in objs if p.get("parent") == g["name"]]
+            todo_n = sum(1 for p in parts if not p.get("done"))
+            out.append(f"- Grant {g['name'].removeprefix('Grant_')}: ${_n(g.get('completion') or 0)} on completion"
+                       + (" (DONE)" if g.get("done") else f", {todo_n} of {len(parts)} parts to do"))
+            for p in parts:
+                label = p["name"].removeprefix(g["name"] + "_").replace("_", " ")
+                hint = ""
+                key = label.split()[0].lower()
+                if not p.get("done") and key in GRANT_PART_HINT:
+                    hint = f"  -> {GRANT_PART_HINT[key]}"
+                out.append(f"    [{'x' if p.get('done') else ' '}] {label}{hint}")
+        return out
 
     def v_unlock(self, *target: str) -> str:
         r = self.call("unlock", "".join(target)) if target else self.call("unlock")

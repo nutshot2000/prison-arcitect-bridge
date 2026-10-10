@@ -10,7 +10,7 @@
 --
 -- Without the DLL this script does nothing.
 
-local VERSION = "0.6.0"
+local VERSION = "0.6.1"
 local MAX_REQUESTS_PER_TICK = 64
 local DebugOut = Game.DebugOut  -- patched by the DLL; native actions go through it
 local NATIVE = false            -- DLL 0.3+ with verified game functions (zone/save/speed/research)
@@ -2205,15 +2205,35 @@ end
 doc("patrol", "action, ...", "Draw a patrol route (straight line), clear one, assign a guard or dog handler to a " ..
     "route cell, or raise/lower a route's priority.", "api.patrol(\"route\", \"blue\", 96, 48, 117, 48)")
 
+-- DLL 0.6.1 adds |done|advance|completion to each item (done = crossed off on the To-do panel).
 function api.objectives()
     local r = native("objectives")
     if type(r) ~= "string" then error("objectives need bridge DLL 0.5", 0) end
     local out = {}
-    for item in string.gmatch(r, ";([^;]+)") do out[#out + 1] = item end
+    for item in string.gmatch(r, ";([^;]+)") do
+        local name, done, adv, comp = string.match(item, "^([^|]*)|(%d)|(%-?%d+)|(%-?%d+)$")
+        name = name or item
+        local child, parent = string.match(name, "^([^<]+)<(.+)$")
+        out[#out + 1] = { name = child or name, parent = parent, done = done and (done == "1"),
+                          advance = tonumber(adv), completion = tonumber(comp) }
+    end
     return { count = tonumber(string.match(r, "^(%d+)")), objectives = out }
 end
-doc("objectives", "", "The live objectives (accepted grants and their parts, tutorial items); child<parent.",
-    "api.objectives()")
+doc("objectives", "", "The live objectives (accepted grants and their parts, tutorial items): name, parent, " ..
+    "done (crossed off), advance and completion money.", "api.objectives()")
+
+-- The To-do panel's own figures (DLL 0.6.1): exhausted / resting staff and the intake state
+-- (open with arrivals at an hour, closed, or closed by a strike or riot).
+function api.todo_state()
+    local r = native("todostate")
+    if type(r) ~= "string" then error("todo_state needs bridge DLL 0.6.1 (install with the game closed)", 0) end
+    if string.sub(r, 1, 6) == "error:" then error(string.sub(r, 8), 0) end
+    local e, rest, intake, arr, hour = string.match(r, "^exhausted (%-?%d+) resting (%-?%d+) intake (%a+) arrivals (%-?%d+) hour (%-?%d+)$")
+    return { exhausted = tonumber(e), resting = tonumber(rest), intake = intake, arrivals = tonumber(arr),
+             arrival_hour = tonumber(hour) }
+end
+doc("todo_state", "", "Exhausted and resting staff, and the intake state, as the game's To-do panel shows them.",
+    "api.todo_state()")
 
 -- Fill escape tunnels: the work queue's "RemoveTunnels" construction on a tunnel cell (what the game's
 -- Foundations > Remove Tunnels tool orders). Measured live 2 Oct 2026: ordered on a dug cell, workmen filled it

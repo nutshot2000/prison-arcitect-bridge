@@ -317,3 +317,17 @@ known AcceptGrant address 0x1405cdd20 resolves there, so the build matches.
   codes, deployment sectors (the Deployment tab).
 
 Tests: 57 Python tests and `mod/test_world.lua` (LuaJIT via lupa 2.8) pass.
+
+## Follow-up 10 — 10 October 2026: To-do panel gaps, DLL 0.6.1 (REA + live check)
+
+The save has no objective state (its `Objectives` section is empty); the panel's figures are in memory:
+- Grant parts: objective records (world+0xc88) are completed by 0x140676030, which sets done u8 @0x104, plays
+  `ObjectiveCompleted` and pays (advance @0xf4, completion @0xf8, paid @0xfc). `objectives` now returns
+  `name[<parent]|done|advance|completion`. Live: Administration offices/Warden done, Accountant_Research/Accountant
+  not; Health Ward/Doctors done, Psychologist not; $5,000 / $10,000 — exactly the panel (user screenshot).
+- Exhausted staff (0x1402da200): the panel prints world+0x46d8 (exhausted) and +0x46d4 (resting). The save-based
+  Energy < 15 estimate said 6 where the panel said 3 (1 resting); `todo` now uses the live counts.
+- Intake (0x1402d8420): strike world+0x2930 == 1, riot +0x20e4 (each unless +0x1a58); otherwise
+  0x140665020(world+0x1778) open -> arrivals 0x140669440(same) at hour +0x1a54, else "closed to new inmates".
+  New native `todostate` / `api.todo_state()`. Live: intake closed, as the panel showed.
+- `todo` shows the grant sections ([x] done / [ ] to do, money, `unlock` hints) and the intake state.

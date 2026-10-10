@@ -120,7 +120,7 @@ static int starts(const char *s, size_t n, const char *p) {
 }
 int _fltused = 0;
 
-#define BRIDGE_VERSION "0.6.0"
+#define BRIDGE_VERSION "0.6.1"
 #define PORT 8972
 
 /* ================= GLU forwarding =================
@@ -452,6 +452,8 @@ static const sig_t NATIVE_SIGS[] = {
     {0x140683ed0ULL, {0x44, 0x88, 0x4C, 0x24, 0x20, 0x53, 0x56, 0x41, 0x54, 0x41}}, /* patrol remove station */
     {0x140684330ULL, {0x4C, 0x89, 0x4C, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18}}, /* patrol connected route */
     {0x140684170ULL, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83}}, /* patrol route priority */
+    {0x140665020ULL, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x05, 0xD3}}, /* intake open */
+    {0x140669440ULL, {0x40, 0x57, 0x4C, 0x63, 0x99, 0xA4, 0x02, 0x00, 0x00, 0x45}}, /* intake arrivals */
 };
 
 static u8 *get_world(void) { u8 *app = *APP_PTR; return app ? *(u8 **)(app + 0x198) : 0; }
@@ -1006,12 +1008,14 @@ static int native_patrol(void *L, const char *s, size_t n) {
     return push_str(L, "error: patrol:route|clear|assign|priority");
 }
 
-/* live objectives (world+0xc88, +0x30/+0x3c; name std::string @0, parent @0x20) */
+/* live objectives (world+0xc88, +0x30/+0x3c; name std::string @0, parent @0x20). Completion
+ * (0x140676030, which plays "ObjectiveCompleted" and pays the grant): done u8 @0x104, advance i32 @0xf4,
+ * completion money i32 @0xf8, paid so far @0xfc. Each item: name[<parent]|done|advance|completion. */
 static int native_objectives(void *L) {
     u8 *w = get_world();
     if (!w) return push_str(L, "error: no prison loaded");
     u8 *m = w + 0xc88;
-    static char out[8000]; sbuf b = {out, 0, sizeof out};
+    static char out[12000]; sbuf b = {out, 0, sizeof out};
     i32 n = *(i32 *)(m + 0x3c); u8 **arr = *(u8 ***)(m + 0x30);
     sb_int(&b, n);
     for (i32 i = 0; arr && i < n && i < 300; i++) {
@@ -1019,7 +1023,32 @@ static int native_objectives(void *L) {
         if (!o) continue;
         sb_str(&b, ";"); sb_str(&b, msstr_chars(o));
         if (*(u64 *)(o + 0x30)) { sb_str(&b, "<"); sb_str(&b, msstr_chars(o + 0x20)); }
+        sb_str(&b, o[0x104] ? "|1|" : "|0|"); sb_int(&b, *(i32 *)(o + 0xf4));
+        sb_str(&b, "|"); sb_int(&b, *(i32 *)(o + 0xf8));
     }
+    return push_str(L, out);
+}
+
+/* What the To-do panel itself shows (0x1402da200 / 0x1402d8420):
+ * exhausted staff world+0x46d8, resting +0x46d4; intake (world+0x1778): open 0x140665020(intake),
+ * arrivals 0x140669440(intake) at hour +0x1a54; strike +0x2930 == 1, riot +0x20e4 (each unless +0x1a58);
+ * closed = none of those and not open ("Your prison is closed to new inmates"). */
+typedef u8 (*intake_open_t)(void *intake);
+typedef i32 (*intake_count_t)(void *intake);
+static const intake_open_t intake_open = (intake_open_t)0x140665020ULL;
+static const intake_count_t intake_count = (intake_count_t)0x140669440ULL;
+static int native_todostate(void *L) {
+    u8 *w = get_world();
+    if (!w) return push_str(L, "error: no prison loaded");
+    char out[160]; sbuf b = {out, 0, sizeof out};
+    sb_str(&b, "exhausted "); sb_int(&b, *(i32 *)(w + 0x46d8));
+    sb_str(&b, " resting "); sb_int(&b, *(i32 *)(w + 0x46d4));
+    int strike = *(i32 *)(w + 0x2930) == 1 && !w[0x1a58], riot = w[0x20e4] && !w[0x1a58];
+    int open = intake_open(w + 0x1778);
+    sb_str(&b, " intake ");
+    sb_str(&b, strike ? "strike" : riot ? "riot" : open ? "open" : "closed");
+    sb_str(&b, " arrivals "); sb_int(&b, open ? intake_count(w + 0x1778) : 0);
+    sb_str(&b, " hour "); sb_int(&b, *(i32 *)(w + 0x1a54));
     return push_str(L, out);
 }
 
@@ -1154,6 +1183,7 @@ static int __cdecl bridge_debugout(void *L) {
         if (starts(s, n, "grant:")) return native_grant(L, s + 6, n - 6);
         if (starts(s, n, "objectives")) return native_objectives(L);
         if (starts(s, n, "readletter")) return native_readletter(L);
+        if (starts(s, n, "todostate")) return native_todostate(L);
         if (starts(s, n, "patrols")) return native_patrols(L);
         if (starts(s, n, "patrol:")) return native_patrol(L, s + 7, n - 7);
         return 0;
