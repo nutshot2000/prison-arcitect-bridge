@@ -134,7 +134,8 @@ def situation(root: Section) -> dict[str, Any]:
                 for o in objs if o.get("Type") == "PowerStation"]
     pumps = [{"at": _pos(o), "powered": _true(o.get("Powered"))} for o in objs if o.get("Type") == "WaterPumpStation"]
     unpowered = Counter(o.get("Type") for o in objs
-                        if o.get("Type") in ("Cooker", "Fridge", "Light", "Tv", "WaterPumpStation", "Capacitor")
+                        if o.get("Type") in ("Cooker", "Fridge", "Light", "Tv", "WaterPumpStation", "Capacitor", "PhoneBooth",
+                                            "LaundryMachine", "WorkshopSaw", "WorkshopPress", "Cctv", "CctvMonitor")
                         and not _true(o.get("Powered")) and not _true(o.get("ExternalPower")))
 
     stats = root.section("StatsTracker")
@@ -170,6 +171,17 @@ def situation(root: Section) -> dict[str, Any]:
         "pending": pending_work(root),
         "tunnels": tunnels(root),
     }
+
+
+def tunnel_cells(root: Section) -> list[tuple[int, int]]:
+    """Every dug tunnel cell in the save (discovered or not)."""
+    sec = root.section("Tunnels")
+    out = []
+    for c in sec.sections() if sec else []:
+        p = c.name.split()
+        if len(p) >= 2 and p[0].lstrip("-").isdigit() and p[1].lstrip("-").isdigit() and (c.num("Dug") or 0) > 0:
+            out.append((int(p[0]), int(p[1])))
+    return sorted(out)
 
 
 def tunnels(root: Section) -> list[dict]:
@@ -242,7 +254,7 @@ def situation_text(s: dict[str, Any]) -> str:
         lines.append(f"TUNNEL {tn['cells']} cells x {tn['x1']}..{tn['x2']} y {tn['y1']}..{tn['y2']}, entrance {ent}"
                      + (", REACHES OUTSIDE THE FENCE (escape route)" if tn["outside_fence"] else "")
                      + ("" if tn["discovered"] else ", not discovered by the guards yet")
-                     + (f" -> `search {tn['entrances'][0][0]} {tn['entrances'][0][1]}`" if tn["entrances"] else ""))
+                     + " -> `tunnels fill`")
     if s.get("todo"):
         lines.append("GAME TO-DO: " + " | ".join(s["todo"]))
     if s.get("money"):
@@ -265,9 +277,10 @@ def situation_text(s: dict[str, Any]) -> str:
     if s["staff_down"]:
         advice.append("Staff are down: hire more guards and a Doctor (Health research) before more intake.")
     if s.get("tunnels"):
-        advice.append("Prisoners are digging tunnels: `emergency tunnelsearch` (or `search x y` at an entrance) so "
-                      "guards find and fill them; "
-                      "long term Dogs (`unlock doghandler`) and metal detectors (`unlock metaldetector`).")
+        # live 2 Oct 2026: a tunnel the guards had found stayed open for days; 20 escaped through another one
+        advice.append("Prisoners are digging tunnels: `tunnels fill` NOW (found tunnels are not filled by "
+                      "themselves); then dogs on a patrol (`unlock doghandler`, game Deployment) and "
+                      "`emergency tunnelsearch` to catch new ones.")
     temp = s.get("temperature")
     if temp is not None and temp >= 80:
         advice.append(f"Prison temperature {temp:.0f}/100 = riot risk: more guards, fix the worst needs, "
@@ -310,7 +323,17 @@ ROOM_REQS: dict[str, dict] = {
     "ParoleRoom": {"min": (5, 5), "indoor": True, "objects": [("VisitorTable",)]},
     "CommonRoom": {"indoor": True},
     "Morgue": {"indoor": True, "objects": [("MorgueSlab",)]},
+    # live 2 Oct 2026: a 5x4 kennel without a crate never worked and nothing flagged it
+    "Kennel": {"min": (5, 5), "indoor": True, "objects": [("DogCrate",)]},
+    "Armoury": {"indoor": True, "objects": [("WeaponRack",), ("GuardLocker",), ("Table", "SmallTable")]},
+    "Solitary": {"indoor": True},
 }
+
+
+def room_reqs() -> dict[str, dict]:
+    """ROOM_REQS overlaid with the game's own requirements when they have been read (`rules`, room_rules.py)."""
+    from .room_rules import as_report_reqs, cached
+    return {**ROOM_REQS, **as_report_reqs(cached())}
 
 
 # The game's To-do items -> the easy verb that clears them (checked against the live panel).
@@ -389,7 +412,7 @@ def escape_route(root: Section, start: list[tuple[int, int]], cache: dict | None
 
 
 def room_problems(root: Section) -> list[str]:
-    """Check every room against ROOM_REQS using the save: size, indoor cells and required objects."""
+    """Check every room against room_reqs() using the save: size, indoor cells and required objects."""
     cells = _cells(root)
     rtypes = _room_types(root)
     members: dict[int, list[tuple[int, int]]] = defaultdict(list)
@@ -404,9 +427,10 @@ def room_problems(root: Section) -> list[str]:
             by_cell[p].add(str(o.get("Type")))
     out = []
     cache: dict = {}
+    reqs = room_reqs()
     for rid, pts in sorted(members.items()):
         rtype = rtypes.get(rid, "?")
-        req = ROOM_REQS.get(rtype)
+        req = reqs.get(rtype)
         if not req:
             continue
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
@@ -638,7 +662,8 @@ def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "
     if kind in ("water", "both"):
         for p, t in pipes.items():
             grid[p] = "L" if t == 1 else "s"
-    power_users = {"Cooker", "Fridge", "Tv", "Light", "CctvMonitor", "LaundryMachine"}
+    power_users = {"Cooker", "Fridge", "Tv", "Light", "CctvMonitor", "LaundryMachine", "PhoneBooth", "Cctv",
+                   "WorkshopSaw", "WorkshopPress"}
     water_users = {"Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine", "Sprinkler"}
     for o in _objects(root):
         t, p = o.get("Type"), _pos(o)
@@ -670,7 +695,7 @@ def utility_map(root: Section, x1: int, y1: int, x2: int, y2: int, kind: str = "
 # Keep in step with LOAD in mod/ai_bridge/data/world.lua (api.hookup).
 POWER_LOAD = {"Cooker": 12, "Fridge": 7, "WaterPumpStation": 25, "LaundryMachine": 10, "Tv": 1, "LargeTv": 2,
               "WorkshopSaw": 10, "WorkshopPress": 10, "CctvMonitor": 4, "Cctv": 5, "Light": 2, "Capacitor": 2,
-              "DoorControlSystem": 2, "MetalDetector": 2, "ArcadeCabinet": 2, "PhoneMonitor": 2}
+              "DoorControlSystem": 2, "MetalDetector": 2, "ArcadeCabinet": 2, "PhoneMonitor": 2, "PhoneBooth": 1}
 # footprints (w, h) of the powered objects that are not 1x1; Pos is the object's centre
 POWER_SIZE = {"Cooker": (2, 1), "Fridge": (2, 1), "WaterPumpStation": (3, 3), "PowerStation": (3, 3),
               "LargeTv": (2, 1), "WorkshopSaw": (3, 1), "WorkshopPress": (3, 1), "CctvMonitor": (3, 1)}

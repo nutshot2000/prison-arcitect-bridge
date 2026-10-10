@@ -501,4 +501,18 @@ end
 calls = {}
 r = call("hookup", "power", { "11,40" })
 assert(r.ok and r.result.newly_connected == 0, J.encode(r))
+---------------------------------------------------------------------------
+-- kennel / armoury / security furniture follows the game's requirements (materials.txt)
+---------------------------------------------------------------------------
+r = call("furnish", "kennel", 10, 10, 14, 13); assert(not r.ok and string.find(r.error, "5x5"), J.encode(r))
+r = call("furnish", "kennel", 10, 10, 15, 15); assert(r.ok, J.encode(r))
+assert(string.find(table.concat(r.result.objects, " "), "DogCrate@10,11"), J.encode(r))  -- 1x2 crate ordered at its bottom cell
+r = call("furnish", "armoury", 30, 30, 33, 32); assert(r.ok, J.encode(r))
+local a = table.concat(r.result.objects, " ")
+assert(string.find(a, "WeaponRack") and string.find(a, "GuardLocker") and string.find(a, "Table"), a)
+r = call("furnish", "security", 40, 40, 43, 43); assert(r.ok and string.find(table.concat(r.result.objects, " "), "CctvMonitor"), J.encode(r))
+calls = {}
+r = call("fill_tunnels", { "116,77", "117,77" }); assert(r.ok and r.result.ordered == 2, J.encode(r))
+assert(calls[1][1] == "Construction" and calls[1][2] == "RemoveTunnels" and calls[1][3] == 116, J.encode(calls[1]))
+r = call("fill_tunnels", {}); assert(not r.ok, J.encode(r))
 print("world.lua tests passed")

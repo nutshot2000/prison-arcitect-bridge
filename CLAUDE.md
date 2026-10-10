@@ -21,6 +21,9 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 - `mod/ai_bridge/data/world.lua` → `api.*` (room, cell_block, perimeter, hookup, utilities, switch, hire, zone...).
   Test offline: `python <lupa runner> mod/test_world.lua mod/ai_bridge/data/world.lua` (see docs/validation.md).
 - `src/pa_agent/bridge/` → client.py (TCP), easy.py (verbs + hints), mcp_server.py, image.py (BMP→PNG).
+- `src/pa_agent/state/room_rules.py` → the game's room requirements, parsed from the installed game's
+  `main.dat` (RAR; `data/materials.txt`, needs WinRAR/UnRAR) into `runs/room_rules.json`. Never commit game data:
+  only the parser and hand-written fallbacks (`ROOM_REQS` in report.py) are in the repo.
 
 ## Developing
 

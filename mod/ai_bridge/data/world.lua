@@ -818,7 +818,9 @@ local SIZE = { Bed = { 1, 2 }, Toilet = { 1, 1 }, Cooker = { 2, 1 }, Fridge = { 
                SortingTable = { 3, 1 }, WorkshopSaw = { 3, 1 }, WorkshopPress = { 3, 1 },
                SofaChairSingle = { 1, 1 }, DrinkMachine = { 1, 1 }, MorgueSlab = { 1, 2 },
                -- from installed Pos (2 Oct 2026): monitor ordered at 121 -> Pos.x 122.5 = cells 121..123
-               CctvMonitor = { 3, 1 }, Cctv = { 1, 1 } }
+               CctvMonitor = { 3, 1 }, Cctv = { 1, 1 },
+               -- materials.txt (2 Oct 2026)
+               DogCrate = { 1, 2 }, WeaponRack = { 2, 1 } }
 
 -- PlaceObject anchor for a footprint whose left/top cell is given (facing down, 0,1).
 -- Measured live 29 Sep 2026 (object Pos after install): an object ordered at x covers
@@ -1031,6 +1033,33 @@ LAYOUTS.morgue = function(x1, y1, x2, y2, out)
     return "Morgue: slabs for the dead (Doctors/Workmen carry bodies here, then a hearse collects them)."
 end
 
+-- Kennel (Dogs): enclosed, at least 5x5, a DogCrate (1x2) - one per dog handler. Live 2 Oct 2026: a 5x4 kennel
+-- without a crate showed "[FAILED] Minimum Size 5 x 5" and "[FAILED] Dog Crate"; the dogs just stood in it.
+LAYOUTS.kennel = function(x1, y1, x2, y2, out)
+    need_inside("kennel", x1, y1, x2, y2, 5, 5)
+    for x = x1, math.min(x2, x1 + 6), 2 do put(out, "DogCrate", x, y1) end
+    return "Kennel: dog crates (one per dog handler). Dogs rest here; put the handlers on a patrol " ..
+           "(game: Deployment > Patrols > Assign Dog Handlers) and they sniff out tunnels and drugs."
+end
+
+-- Armoury (Armoury research): indoors, a WeaponRack, a GuardLocker and a Table. Armed guards equip here.
+LAYOUTS.armoury = function(x1, y1, x2, y2, out)
+    need_inside("armoury", x1, y1, x2, y2, 4, 3)
+    put(out, "WeaponRack", x1, y1); put(out, "GuardLocker", x2, y1)
+    put(out, "Table", x1, y2)
+    return "Armoury: weapon rack, guard locker and a table. Armed guards collect their weapons here."
+end
+
+-- Security (Security research): at least 4x4, OfficeDesk + Chair + FilingCabinet; CCTV monitors (power) let
+-- a guard watch the cameras.
+LAYOUTS.security = function(x1, y1, x2, y2, out)
+    need_inside("security room", x1, y1, x2, y2, 4, 4)
+    put(out, "OfficeDesk", x1, y1); put(out, "Chair", x1, y1 + 1); put(out, "FilingCabinet", x2, y1)
+    if x2 - x1 >= 2 then put(out, "CctvMonitor", x1, y2) end
+    return "Security room: desk, chair, filing cabinet and a CCTV monitor (power: hookup). Place Cctv cameras " ..
+           "around the prison with `place Cctv x y`."
+end
+
 -- Rooms that need no furniture: just the zone (they still need a floor, and
 -- Deliveries/Garbage/Storage work best next to the road).
 local EMPTY_ROOMS = { deliveries = "Deliveries: trucks drop supplies here. Put it next to the road.",
@@ -1045,10 +1074,12 @@ local KIND_ROOM = { kitchen = "Kitchen", canteen = "Canteen", shower = "Shower",
                     infirmary = "MedicalWard", deliveries = "Deliveries", garbage = "Garbage", storage = "Storage",
                     dormitory = "Dormitory", visitation = "Visitation", chapel = "Chapel", commonroom = "CommonRoom",
                     parole = "ParoleRoom", laundry = "Laundry", classroom = "Classroom", workshop = "Workshop",
-                    library = "Library", cleaning = "CleaningCupboard", morgue = "Morgue" }
+                    library = "Library", cleaning = "CleaningCupboard", morgue = "Morgue", kennel = "Kennel",
+                    armoury = "Armoury", security = "Security" }
 -- research the game needs before the room (or its furniture) can be built
 local ROOM_RESEARCH = { laundry = "PrisonLabour", workshop = "PrisonLabour", library = "PrisonLabour",
-                        classroom = "Education", cleaning = "Cleaning", infirmary = "Health", morgue = "Health" }
+                        classroom = "Education", cleaning = "Cleaning", infirmary = "Health", morgue = "Health",
+                        kennel = "Dogs", armoury = "Armoury", security = "Security" }
 
 local function kind_names()
     local names = {}
@@ -1121,7 +1152,7 @@ end
 doc("room", "kind, x1, y1, x2, y2, [door_side]",
     "EASIEST: build a whole room in one call: walls + floor + door + furniture + zone. kind: kitchen, canteen, shower, " ..
     "yard, holding, cell, office, staffroom, infirmary, deliveries, garbage, storage, chapel, commonroom, parole, " ..
-    "laundry, classroom, workshop, library, cleaning, morgue. The rectangle includes the walls.",
+    "laundry, classroom, workshop, library, cleaning, morgue, kennel, armoury, security. The rectangle includes the walls.",
     "api.room(\"kitchen\", 60, 30, 70, 38, \"south\")")
 
 -- A row of cells facing south onto a corridor. Each cell is 3 wide x 3 deep inside.
@@ -1289,8 +1320,11 @@ end
 -- laid by workmen into the utility grid (they show up in the save's Electricity and
 -- Water sections). Cables and pipes may run under walls.
 local NEEDS = {
+    -- materials.txt: objects with Properties Electrical, plus the Wired ones that are not (PhoneBooth: live
+    -- 2 Oct 2026 the phones had no power because they were not on this list)
     power = { "WaterPumpStation", "Capacitor", "Cooker", "Fridge", "Tv", "LargeTv", "Light", "LaundryMachine", "Cctv", "CctvMonitor",
-              "DoorControlSystem", "MetalDetector", "WorkshopSaw", "WorkshopPress", "ArcadeCabinet", "PhoneMonitor" },
+              "DoorControlSystem", "MetalDetector", "WorkshopSaw", "WorkshopPress", "ArcadeCabinet", "PhoneMonitor",
+              "PhoneBooth", "VisitorTableSecure" },
     water = { "Toilet", "ShowerHead", "Sink", "Drain", "LaundryMachine", "Sprinkler" },
 }
 -- Only real sources seed the network. A Capacitor is NOT a source: it must itself be
@@ -1565,7 +1599,7 @@ function api.hookup(kind, known)
     -- Fitted to station Demand measured live (2 Oct 2026): 3 cookers + 2 fridges = 50, pump + 2 TVs = 27,
     -- saw + press + TV = 21, 3 laundry machines = 30, 2 CCTV monitors + 3 cameras = 23.
     local LOAD = { Cooker = 12, Fridge = 7, WaterPumpStation = 25, LaundryMachine = 10, Tv = 1, LargeTv = 2,
-                   WorkshopSaw = 10, WorkshopPress = 10, CctvMonitor = 4, Cctv = 5 }
+                   WorkshopSaw = 10, WorkshopPress = 10, CctvMonitor = 4, Cctv = 5, PhoneBooth = 1 }
     local short = {}
     -- grids that actually have a source (station / pump); a line cut off from its source is an island
     -- (live: a staff room kept its cable after the link was cut and looked "connected")
@@ -2122,6 +2156,24 @@ function api.objectives()
 end
 doc("objectives", "", "The live objectives (accepted grants and their parts, tutorial items); child<parent.",
     "api.objectives()")
+
+-- Fill escape tunnels: the work queue's "RemoveTunnels" construction on a tunnel cell (what the game's
+-- Foundations > Remove Tunnels tool orders). Measured live 2 Oct 2026: ordered on a dug cell, workmen filled it
+-- and the floor stayed as it was. Discovered tunnels are NOT filled by themselves (a tunnel found days earlier
+-- was still open when 20 prisoners escaped through a second one). cells: list of "x,y" (the easy front end reads
+-- the dug cells from a save). Raw Request: the RemoveTunnels "material" never appears on the cell, so the order is
+-- not tracked as planned construction.
+function api.fill_tunnels(cells)
+    if type(cells) ~= "table" or #cells == 0 then error("give the tunnel cells as a list of \"x,y\"", 0) end
+    local n = 0
+    for _, k in ipairs(cells) do
+        local x, y = string.match(tostring(k), "(-?%d+),(-?%d+)")
+        if x then WorkQueue.Request("Construction", "RemoveTunnels", tonumber(x), tonumber(y)); n = n + 1 end
+    end
+    return { ordered = n, note = "Workmen fill these tunnel cells (paid like construction)." }
+end
+doc("fill_tunnels", "cells", "Order workmen to fill tunnel cells (list of \"x,y\"; the easy `tunnels fill` reads them " ..
+    "from a save).", "api.fill_tunnels({\"116,77\"})")
 
 doc("search", "x, y, [radius]", "Guards search the furniture within radius (default 2) of a cell: finds contraband " ..
     "and tunnel entrances.", "api.search(107, 18)")

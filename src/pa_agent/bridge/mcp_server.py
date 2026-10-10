@@ -88,9 +88,10 @@ class Server:
         verb("pa_room", "room", "Build a whole room in one call: walls + floor + door + furniture + zone. The rectangle "
              "INCLUDES the walls. kind: holding, cell, kitchen, canteen, shower, yard, office, staffroom, infirmary, "
              "dormitory, visitation, storage, deliveries, garbage, chapel, commonroom, parole, laundry, classroom, workshop, "
-             "library, cleaning (the last five need research: pa_unlock). door_side: north/south/east/west. Good sizes: "
+             "library, cleaning, kennel, armoury, security (the last eight need research: pa_unlock; pa_rules gives "
+             "the game's exact requirements). door_side: north/south/east/west. Good sizes: "
              "holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12 (outdoor), office 6x6, chapel 10x10, "
-             "commonroom 10x8, parole 7x7, laundry 8x6.",
+             "commonroom 10x8, parole 7x7, laundry 8x6, kennel 8x8, armoury 7x6, security 7x7.",
              {"kind": STR, **RECT, "door_side": STR}, ["kind", *RECT], ["kind", *RECT, "door_side"])
         verb("pa_cells", "cells", "A row of 3x3 prison cells (bed, toilet, jail door, zoned Cell) with a corridor below. "
              "Uses (count*4+1) x 7 cells from x,y.", {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"],
@@ -135,6 +136,9 @@ class Server:
         verb("pa_search", "search", "Guards search the furniture around a cell (default radius 2): finds contraband and "
              "tunnel entrances (pa_report lists TUNNEL entrances); discovered tunnels get filled.",
              {"x": INT, "y": INT, "radius": INT}, ["x", "y"], ["x", "y", "radius"])
+        verb("pa_tunnels", "tunnels", "Escape tunnels (from the save). action fill: workmen fill every dug cell "
+             "(found tunnels are NOT filled by themselves; prisoners escape through them).",
+             {"action": {"type": "string", "enum": ["", "fill"]}}, [], ["action"])
         verb("pa_solitary", "solitary", "A row of 1x1 solitary cells (SolitaryDoor, zoned Solitary) with a corridor "
              "below, (count*2+1) x 5 cells. Needed for punishments; without it the riot risk climbs.",
              {"x": INT, "y": INT, "count": INT}, ["x", "y", "count"], ["x", "y", "count"])
@@ -156,6 +160,9 @@ class Server:
              {"room_type": STR, **RECT}, ["room_type", *RECT], ["room_type", *RECT])
         verb("pa_rooms", "rooms", "Every room with its type and whether the game says it is missing something.",
              {}, [], [])
+        verb("pa_rules", "rules", "The game's own requirements per room type (minimum size, enclosed/indoor, required "
+             "objects, research), read from the installed game. room: one room (kennel, Armoury...); refresh re-reads.",
+             {"room": STR}, [], ["room"])
         verb("pa_hire", "hire", "Hire staff: Guard, Cook, Workman, Warden (always); Doctor, Janitor, Gardener, Foreman, "
              "Chief, Accountant, Psychologist, Lawyer, DogHandler, ArmedGuard after research. Costs the game's price.",
              {"type": STR, "count": INT}, ["type"], ["type", "count"])

@@ -56,7 +56,17 @@ def _counts(d: dict | None) -> str:
 
 
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot", "unlock"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules"}
+
+# `room` kinds -> the game's room type (keep in step with KIND_ROOM in world.lua)
+KIND_ROOM = {"kitchen": "Kitchen", "canteen": "Canteen", "shower": "Shower", "yard": "Yard", "holding": "HoldingCell",
+             "cell": "Cell", "office": "Office", "staffroom": "Staffroom", "infirmary": "MedicalWard",
+             "deliveries": "Deliveries", "garbage": "Garbage", "storage": "Storage", "dormitory": "Dormitory",
+             "visitation": "Visitation", "chapel": "Chapel", "commonroom": "CommonRoom", "parole": "ParoleRoom",
+             "laundry": "Laundry", "classroom": "Classroom", "workshop": "Workshop", "library": "Library",
+             "cleaning": "CleaningCupboard", "morgue": "Morgue", "kennel": "Kennel", "armoury": "Armoury",
+             "security": "Security"}
+OUTDOOR_KINDS = {"yard", "deliveries", "garbage"}
 
 # Research worth doing, in order (each line: research, why). Departments work in parallel: the Warden,
 # the Foreman (Maintainance) and the Chief (Security) each research one thing at a time.
@@ -88,7 +98,9 @@ VERB_HELP = {
              "Build a whole room: walls + floor + door + furniture + zone. The rectangle INCLUDES the walls.\n"
              "  kinds: holding kitchen canteen shower yard office staffroom infirmary dormitory visitation storage\n"
              "         deliveries garbage chapel commonroom parole laundry classroom workshop library cleaning morgue\n"
-             "  (laundry/workshop/library need PrisonLabour, classroom Education, cleaning Cleaning: `unlock <kind>`)\n"
+             "         kennel armoury security\n"
+             "  (laundry/workshop/library need PrisonLabour, classroom Education, cleaning Cleaning, kennel Dogs,\n"
+             "  armoury Armoury: `unlock <kind>`). The game's own requirements per room: `rules <kind>`.\n"
              "  door_side: north south east west (default south). Yards/deliveries/garbage have no walls.\n"
              "  Sizes that work: holding 9x8, kitchen 9x8, canteen 12x10, shower 7x6, yard 16x12, office 6x6,\n"
              "  chapel 8x8+, commonroom 10x8, parole 7x7, laundry 8x6, classroom 9x9, workshop 9x7, library 9x7."),
@@ -118,6 +130,9 @@ VERB_HELP = {
     "unzone": ("unzone <x1> <y1> <x2> <y2>", "Remove zoning."),
     "roomtypes": ("roomtypes", "Every room type the game knows."),
     "rooms": ("rooms", "Every room in the prison with its type and whether the game says it is missing something."),
+    "rules": ("rules [room|refresh]",
+              "The game's own requirements for each room type (minimum size, enclosed/indoor, required objects,\n"
+              "  research), read from your installed game. `rules kennel` for one; `refresh` re-reads the game."),
     "hire": ("hire <type> [count]",
              "Hire staff. Guard Cook Workman Warden are always available; Doctor Janitor Gardener Foreman Chief\n"
              "  Accountant Psychologist Lawyer DogHandler ArmedGuard need research first."),
@@ -162,6 +177,9 @@ VERB_HELP = {
                   "The game's Emergencies buttons. tunnelsearch finds and fills escape tunnels, shakedown finds\n"
                   "  contraband, drugbust finds narcotics (one search at a time; `stop` ends it). bangup/lockdown\n"
                   "  toggle: run the same command again to lift it."),
+    "tunnels": ("tunnels [fill]",
+                "Escape tunnels from the save (cells, whether they reach outside the fence, found or not).\n"
+                "  `tunnels fill` orders workmen to fill every dug cell. Found tunnels do NOT fill themselves."),
     "search": ("search <x> <y> [radius]",
                "Guards search the furniture around a cell (default radius 2): finds contraband and tunnel entrances\n"
                "  (`report` lists TUNNEL entrances). A discovered tunnel is filled by workmen."),
@@ -273,12 +291,40 @@ class Easy:
         return f"free: x {r['x1']}..{r['x2']}, y {r['y1']}..{r['y2']}  -> e.g. room <kind> {r['x1']} {r['y1']} {r['x2']} {r['y2']}"
 
     def v_room(self, kind: str, x1: str, y1: str, x2: str, y2: str, door_side: str = "south") -> str:
-        r = self.call("room", kind, *self._ints(x1, y1, x2, y2), door_side)
+        from ..state.room_rules import describe, load
+        bx1, by1, bx2, by2 = self._ints(x1, y1, x2, y2)
+        room_type = KIND_ROOM.get(kind.lower())
+        rule = load().get(room_type or "", {})
+        if rule.get("min"):
+            # the rectangle includes the walls, except for outdoor kinds
+            pad = 0 if kind.lower() in OUTDOOR_KINDS else 2
+            w, h = abs(bx2 - bx1) + 1 - pad, abs(by2 - by1) + 1 - pad
+            mw, mh = rule["min"]
+            if not ((w >= mw and h >= mh) or (w >= mh and h >= mw)):
+                raise EasyError(f"a {kind} needs at least {mw}x{mh} inside; that rectangle gives {w}x{h} "
+                                f"(walls included: at least {mw + pad}x{mh + pad}). Game rule: {describe(room_type, rule)}")
+        r = self.call("room", kind, bx1, by1, bx2, by2, door_side)
         i = r["inside"]
         furn = ", ".join(r["furniture"]) if r["furniture"] else "none needed"
         z = f"zoned {r['room']}" if r["zoned"] else "NOT zoned"
+        need = f"\ngame requires: {describe(r['room'], rule).split(': ', 1)[1]}" if rule else ""
         return (f"{r['room']}: {r['built']}; inside x {i['x1']}..{i['x2']}, y {i['y1']}..{i['y2']}; {z}\n"
-                f"furniture: {furn}\n{r['note']}\nNext: `wait` so workmen build it, then `progress`.")
+                f"furniture: {furn}{need}\n{r['note']}\nNext: `wait` so workmen build it, then `progress`.")
+
+    def v_rules(self, *name: str) -> str:
+        """The game's own room requirements (read from the installed game's data, cached in runs/)."""
+        from ..state.room_rules import describe, load
+        want = " ".join(name).strip()
+        rules = load(refresh=want.lower() == "refresh")
+        if not rules:
+            return ("Could not read the room rules from the game (needs the Steam install and WinRAR/UnRAR for "
+                    "main.dat). `rooms`/`problems` fall back to the bridge's own list.")
+        if want and want.lower() != "refresh":
+            key = KIND_ROOM.get(want.lower()) or next((k for k in rules if k.lower() == want.lower()), None)
+            if not key or key not in rules:
+                return f"no room '{want}'. Rooms: " + ", ".join(sorted(rules))
+            return describe(key, rules[key])
+        return "\n".join(describe(k, rules[k]) for k in sorted(rules))
 
     def v_cells(self, x: str, y: str, count: str = "4") -> str:
         r = self.call("cell_block", *self._ints(x, y, count))
@@ -620,6 +666,14 @@ class Easy:
                 done.append("hookup: " + " / ".join(h.splitlines()[:2]))
         except (EasyError, BridgeError) as exc:
             done.append(f"hookup skipped: {exc}")
+        try:
+            from ..state.report import tunnel_cells
+            dug = tunnel_cells(self.snapshot())
+            if dug:
+                r = self.call("fill_tunnels", [f"{x},{y}" for x, y in dug])
+                done.append(f"ordered {r['ordered']} tunnel cells filled (escape tunnels)")
+        except (EasyError, BridgeError) as exc:
+            done.append(f"tunnel fill skipped: {exc}")
         util = s.get("utilities") or {}
         for st in util.get("power_stations") or []:
             if st.get("on") is False and st.get("overloaded", 0) == 1 and st.get("demand", 0) <= st.get("capacity", 50):
@@ -912,6 +966,23 @@ class Easy:
         r = self.call("emergency", action)
         on = [k for k, v in r["state"].items() if v]
         return f"{r['note']} Active now: {', '.join(on) if on else 'nothing'}."
+
+    def v_tunnels(self, action: str = "") -> str:
+        """Escape tunnels from a fresh save; `tunnels fill` orders workmen to fill every dug cell."""
+        from ..state.report import tunnel_cells, tunnels
+        root = self.snapshot(max_age=0)
+        found = tunnels(root)
+        lines = [f"{t['cells']} cells x {t['x1']}..{t['x2']} y {t['y1']}..{t['y2']}"
+                 + (", REACHES OUTSIDE THE FENCE" if t["outside_fence"] else "")
+                 + ("" if t["discovered"] else ", not found by the guards yet") for t in found]
+        if action.lower() != "fill":
+            return ("\n".join(lines) + "\n`tunnels fill` has workmen fill them all.") if lines else "no tunnels"
+        cells = tunnel_cells(root)
+        if not cells:
+            return "no tunnels to fill"
+        r = self.call("fill_tunnels", [f"{x},{y}" for x, y in cells])
+        return (f"ordered {r['ordered']} tunnel cells filled ({len(found)} tunnels). {r['note']} "
+                "Prisoners dig again from cell toilets: keep dogs on patrol and run `emergency tunnelsearch`.")
 
     def v_search(self, x: str, y: str, radius: str = "2") -> str:
         r = self.call("search", *self._ints(x, y, radius))

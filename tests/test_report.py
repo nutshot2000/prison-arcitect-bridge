@@ -214,3 +214,18 @@ END
                                  {"type": "PowerStation", "x": 100, "y": 30, "t": 0}], now=10000)
         self.assertEqual(v["installed"], 2)
         self.assertEqual(v["failed"], ["PowerStation@100,30"])
+
+
+class TunnelCellTests(unittest.TestCase):
+    def test_dug_cells_only(self):
+        from pa_agent.state.report import tunnel_cells
+        root = parse_prison("""
+BEGIN Tunnels
+    LastDigTime 5.0
+    BEGIN "116 77" Dug 1.000000 Discovered true END
+    BEGIN "117 77" Dug 0.400000 END
+    BEGIN "118 77" Dug 0.000000 END
+    BEGIN Diggers Size 0 END
+END
+""")
+        self.assertEqual(tunnel_cells(root), [(116, 77), (117, 77)])

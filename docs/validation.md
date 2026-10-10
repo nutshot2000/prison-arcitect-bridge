@@ -261,3 +261,27 @@ Problems hit, and what changed:
   In Deployment > Patrols a short drag with Assign Guards added 12 guard slots.
 
 Tests: 52 Python tests and `mod/test_world.lua` (LuaJIT via lupa 2.8) pass.
+
+## Follow-up 8 — 2 October 2026: room requirements from the game
+
+- The kennel built by `building` + `zone` (5x4 inside, no crate) never worked; the game's tooltip said
+  "[FAILED] Minimum Size 5 x 5", "[FAILED] Dog Crate", and `rooms`/`problems` said nothing (no Kennel entry in
+  `ROOM_REQS`). The game's room definitions are in `data/materials.txt` inside `main.dat` (a RAR archive).
+- New `room_rules.py`: extracts and parses every `BEGIN Room` block from the installed game with UnRAR (38 rooms)
+  into `runs/room_rules.json`; game data stays out of the repo. `rules [room|refresh]` (MCP `pa_rules`) prints them;
+  `room` refuses a rectangle below the minimum; `room_problems` uses the game's rules over the hand-written ones
+  (which gained Kennel, Armoury, Solitary). `room kennel|armoury|security` furnish to the requirements
+  (DogCrate 1x2, WeaponRack 2x1 from materials.txt).
+- Live: `rules refresh` read all 38 rooms; `problems` then flagged the hand-built armoury (missing WeaponRack,
+  GuardLocker, Table), fixed with `furnish armoury`. The rebuilt 6x6 kennel with 2 crates passes. Learned from the
+  data: kitchen workers need the KitchenInduction program, workshop workers WorkshopInduction, library Academic.
+- Tests: 56 Python, Lua tests pass (parser, cached extract, small-kennel report, room pre-check, new layouts).
+- Phone booths had no power: they are `Properties Wired` (not `Electrical`) in materials.txt and were missing from
+  hookup's list. Added (PhoneBooth, VisitorTableSecure); `hookup power` wired 7, all 7 powered after.
+- Tunnels: the guards had found a 61-cell tunnel days earlier but it was never filled; meanwhile 4 diggers from the
+  new south block (toilets at 123..135,92) dug along y=90 past the fence and 20 prisoners escaped in one day. A
+  Remove Tunnels drag in the game UI created no fill job. `WorkQueue.Request("Construction", "RemoveTunnels", x, y)`
+  on a dug cell does: tested on 116,77 (filled, floor stayed Dirt), then all 116 dug cells from the save were
+  ordered and `tunnels` reported none ~1 game hour later. New `api.fill_tunnels`, verb `tunnels [fill]` (MCP
+  `pa_tunnels`); `auto` fills tunnels; `report` now says `tunnels fill`.
+

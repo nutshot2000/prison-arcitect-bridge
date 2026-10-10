@@ -120,6 +120,15 @@ closed fence stall every workman (`room` refuses them now; `progress` shows UNRE
     Logistics and Reform screens. In Deployment > Patrols, dragging Assign Guards along a route adds a guard slot for
     every cell it passes (one short drag added 12).
 16. **`pa_wait` (MCP) runs at most 55 s per call**: clients drop tool calls after about a minute. Use speed 4-5.
+17. **`rules <room>` gives the game's own requirements** (minimum size, enclosed/indoor, required objects, research,
+    the program its prisoner workers need), read from your installed game the first time (`rules refresh` re-reads).
+    `room` refuses a rectangle below the minimum, and `rooms`/`problems` say which requirement a room fails.
+    Ones that bit live: Kennel 5x5 + DogCrate; Armoury WeaponRack + GuardLocker + Table; HoldingCell 5x5;
+    kitchen workers need the KitchenInduction program and workshop workers WorkshopInduction (Reform tab).
+18. **Tunnels: `tunnels fill`.** Found tunnels are NOT filled by themselves (one stayed open for days; 20 prisoners
+    escaped through another in a day). `tunnels` lists them from the save, `tunnels fill` (and `auto`) orders workmen
+    to fill every dug cell, found or not. Diggers start under cell toilets; keep dogs on a patrol.
+19. **Phone booths need a cable** (`Wired` in the game data, not `Electrical`); `hookup power` wires them now.
 
 ## When something fails
 
