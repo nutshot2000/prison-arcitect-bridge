@@ -6,7 +6,7 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 
 - Easy front door: `.\prison.ps1 <verb>` = `.\.venv\Scripts\pa-agent.exe play <verb>` (help, status, next, report,
   look, space, room, cells, fence, station, place, hookup, power, switch, utilmap, zone, rooms, hire, research,
-  intake, pause, resume, wait, progress, save, screenshot, patrols, patrol, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
+  intake, pause, resume, wait, progress, save, screenshot, patrols, patrol, catalog, floor, wall, lua). Same verbs as MCP tools `pa_*` (`pa-agent mcp`).
 - Loop: `status` → `next` → one action → `wait 60` → `report`. Set `intake beds` first.
 - `report` / `utilmap` / `rooms` / `next` save the game (`pa_agent_snapshot`) and parse it
   (`src/pa_agent/state/report.py`). `screenshot` gets the last rendered frame from the DLL (works behind windows).
@@ -24,6 +24,9 @@ Read AGENTS.md for repo rules. To PLAY, read docs/START-HERE.md first (build ord
 - `src/pa_agent/state/room_rules.py` → the game's room requirements, parsed from the installed game's
   `main.dat` (RAR; `data/materials.txt`, needs WinRAR/UnRAR) into `runs/room_rules.json`. Never commit game data:
   only the parser and hand-written fallbacks (`ROOM_REQS` in report.py) are in the repo.
+- `src/pa_agent/state/catalog.py` → every floor/wall/object (base + DLC: materials.txt, materials_dlc.txt,
+  language base-language.txt + d11.txt) into `runs/catalog.json`; `catalog` searches it, `place`/`floor`/`wall`
+  check names against it. Same rule: never commit the extracted data.
 
 ## Developing
 

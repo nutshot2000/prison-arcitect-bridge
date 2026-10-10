@@ -62,7 +62,7 @@ GRANT_PART_HINT = {"accountant": "`unlock accountant`", "psychologist": "`unlock
                    "foreman": "`unlock foreman`", "chief": "`unlock chief`"}
 
 READ_ONLY_VERBS = {"help", "status", "next", "report", "look", "space", "rooms", "roomtypes", "todo", "utilmap",
-                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols"}
+                   "power", "progress", "problems", "money", "screenshot", "unlock", "rules", "patrols", "catalog"}
 
 # `room` kinds -> the game's room type (keep in step with KIND_ROOM in world.lua)
 KIND_ROOM = {"kitchen": "Kitchen", "canteen": "Canteen", "shower": "Shower", "yard": "Yard", "holding": "HoldingCell",
@@ -119,7 +119,14 @@ VERB_HELP = {
     "station": ("station <power|water> <x> <y>",
                 "Order a PowerStation or WaterPumpStation (3x3, top-left at x,y). One power station feeds 50;\n"
                 "  never place two power stations touching. The water pump needs power."),
-    "place": ("place <Object> <x> <y>", "Order one object (PowerSwitch, Bed, Toilet, Light, JailDoor...) at a cell."),
+    "place": ("place <Object> <x> <y>", "Order one object (PowerSwitch, Bed, Toilet, Light, JailDoor...) at a cell.\n"
+                                        "  Any object in `catalog object <words>` (decor, DLC items too)."),
+    "floor": ("floor <Material> <x1> <y1> <x2> <y2>",
+              "Lay a floor over a rectangle: any floor from `catalog floor <words>` (DarkWoodFloor, MarbleTiles,\n"
+              "  RunningTrack...). It replaces the floor that is there."),
+    "wall": ("wall <Material> <x1> <y1> <x2> <y2>",
+             "A straight line of wall/fence, or the outline of a rectangle: any from `catalog wall <words>`\n"
+             "  (BrickWall, GlassWall, BambooFence...). For a whole room use `room`."),
     "fence": ("fence <x1> <y1> <x2> <y2>",
               "Perimeter fence around the whole prison (include deliveries, garbage, power, water).\n"
               "  Where it crosses the road it puts a RoadGate. Without a fence prisoners walk away."),
@@ -139,6 +146,10 @@ VERB_HELP = {
     "rules": ("rules [room|refresh]",
               "The game's own requirements for each room type (minimum size, enclosed/indoor, required objects,\n"
               "  research), read from your installed game. `rules kennel` for one; `refresh` re-reads the game."),
+    "catalog": ("catalog <words> | catalog floor|wall|object <words> | catalog refresh",
+                "Everything you can build (base game + DLC), read from your installed game: the exact name\n"
+                "  to use with `place` / `floor` / `wall`, size, cost, research, power/water. `catalog wood floor`,\n"
+                "  `catalog object plant`. DLC items only work if you own that DLC."),
     "hire": ("hire <type> [count]",
              "Hire staff. Guard Cook Workman Warden are always available; Doctor Janitor Gardener Foreman Chief\n"
              "  Accountant Psychologist Lawyer DogHandler ArmedGuard need research first."),
@@ -323,6 +334,30 @@ class Easy:
         return (f"{r['room']}: {r['built']}; inside x {i['x1']}..{i['x2']}, y {i['y1']}..{i['y2']}; {z}\n"
                 f"furniture: {furn}{need}\n{r['note']}\nNext: `wait` so workmen build it, then `progress`.")
 
+    def v_catalog(self, *words: str) -> str:
+        """Floors, walls and objects the game can build (read from the installed game, cached in runs/)."""
+        from ..state.catalog import BUILDABLE, describe, load, search
+        ws = [w for w in words if w]
+        items = load(refresh=bool(ws) and ws[0].lower() == "refresh")
+        if not items:
+            return "Could not read the game's item list (needs the Steam install and WinRAR/UnRAR for main.dat)."
+        if ws and ws[0].lower() == "refresh":
+            ws = ws[1:]
+        kinds = BUILDABLE
+        if ws and ws[0].lower() in BUILDABLE + ("floors", "walls", "objects"):
+            kinds = (ws.pop(0).lower().rstrip("s"),)
+        if not ws:
+            counts = {k: sum(1 for i in items.values() if i["kind"] == k) for k in BUILDABLE}
+            return (f"{counts['floor']} floors, {counts['wall']} walls/fences, {counts['object']} objects. "
+                    "Search: `catalog <words>`, e.g. `catalog wood floor`, `catalog object plant`.")
+        hits = search(items, ws, kinds)
+        if not hits:
+            return f"nothing called '{' '.join(ws)}'. Try fewer or shorter words."
+        lines = [describe(n, it) for n, it in hits[:30]]
+        if len(hits) > 30:
+            lines.append(f"... {len(hits) - 30} more: add a word to narrow it down.")
+        return "\n".join(lines)
+
     def v_rules(self, *name: str) -> str:
         """The game's own room requirements (read from the installed game's data, cached in runs/)."""
         from ..state.room_rules import describe, load
@@ -370,9 +405,51 @@ class Easy:
         out = f"intake: {r['mode']}{extra} - {r.get('meaning')}"
         return out + (f"\n{r['advice']}" if r.get("advice") else "")
 
+    def _catalog_name(self, name: str, kinds: tuple[str, ...]) -> tuple[str, dict]:
+        """The game's exact name for a floor/wall/object (any case, or its toolbar name); unknown names are
+        refused with the closest matches. Without the catalogue (no game data) the name passes through."""
+        from ..state.catalog import describe, load, search
+        items = load()
+        if not items:
+            return name, {}
+        key = name.replace(" ", "").lower()
+        for n, it in items.items():
+            if it["kind"] in kinds and key in (n.lower(), it.get("display", "").replace(" ", "").lower()):
+                return n, it
+        hits = search(items, [w for w in re.split(r"[\s_]+|(?<=[a-z])(?=[A-Z])", name) if w], kinds)[:6]
+        what = "/".join(kinds)
+        raise EasyError(f"no {what} called '{name}'." + (" Did you mean: " + "; ".join(describe(n, i) for n, i in hits)
+                        if hits else f" `catalog {kinds[0]} <words>` searches them."))
+
     def v_place(self, obj: str, x: str, y: str) -> str:
+        obj, info = self._catalog_name(obj, ("object", "item"))  # items: movable (LaundryBasket)
         r = self.call("place_object", obj, *self._ints(x, y))
-        return f"ordered {r['object']} at {r['x']},{r['y']} (workmen install it)"
+        extra = ""
+        if info.get("size") and info["size"] != [1, 1]:
+            extra = f", {info['size'][0]}x{info['size'][1]}"
+        if info.get("cost"):
+            extra += f", ${info['cost']:,}"
+        if info.get("research"):
+            extra += f"; needs the {info['research']} research"
+        return f"ordered {r['object']} at {r['x']},{r['y']}{extra} (workmen install it)"
+
+    def v_floor(self, material: str, *rect: str) -> str:
+        if len(rect) != 4:
+            raise EasyError("usage: " + VERB_HELP["floor"][0])
+        mat, info = self._catalog_name(material, ("floor",))
+        r = self.call("build_area", mat, *self._ints(*rect))
+        cost = f" (about ${info['cost'] * r['queued']:,})" if info.get("cost") else ""
+        return f"ordered {r['queued']} cells of {mat}{cost}; workmen lay it over time."
+
+    def v_wall(self, material: str, *rect: str) -> str:
+        if len(rect) != 4:
+            raise EasyError("usage: " + VERB_HELP["wall"][0])
+        mat, _ = self._catalog_name(material, ("wall",))
+        x1, y1, x2, y2 = self._ints(*rect)
+        straight = x1 == x2 or y1 == y2
+        r = self.call("build_line" if straight else "build_wall_rect", mat, x1, y1, x2, y2)
+        return (f"ordered {r['queued']} cells of {mat} as a {'line' if straight else 'rectangle outline'}. "
+                + (r.get("note") or "Leave a gap for a door (`place Door x y`)."))
 
     def v_station(self, kind: str, x: str, y: str) -> str:
         names = {"power": "PowerStation", "water": "WaterPumpStation"}

@@ -331,3 +331,22 @@ The save has no objective state (its `Objectives` section is empty); the panel's
   0x140665020(world+0x1778) open -> arrivals 0x140669440(same) at hour +0x1a54, else "closed to new inmates".
   New native `todostate` / `api.todo_state()`. Live: intake closed, as the panel showed.
 - `todo` shows the grant sections ([x] done / [ ] to do, money, `unlock` hints) and the intake state.
+
+## Follow-up 11 — 10 October 2026: catalog of everything buildable; floor / wall / place verbs
+
+- The game defines 147 materials and ~600 objects (base `data/materials.txt` + `data/materials_dlc.txt`, DLC packs
+  PrisonWingPriviledges, SeaAirLand, FreeContentPack_1); toolbar names are in `data/language/base-language.txt`
+  (`material_<lowercase>`) and `d11.txt` (DLC, mixed case). The bridge knew 42 materials and 41 object sizes, and
+  the easy front end had no verb that laid floors or walls at all (only `pa-agent lua "api.build_area(...)"`).
+- `catalog [floor|wall|object] <words>` / MCP `pa_catalog`: name, toolbar name, size, cost, research, power/water,
+  DLC. Parsed from the installed game into `runs/catalog.json` (git-ignored); 748 entries: 69 floors, 47 walls,
+  426 objects (+ items, characters, vehicles, engine-only materials, which search leaves out).
+- New `floor <Material> x1 y1 x2 y2` and `wall <Material> x1 y1 x2 y2` (line or outline), MCP `pa_floor`, `pa_wall`,
+  and `pa_place` is back. All three resolve names against the catalog (case-insensitive, or the toolbar name such
+  as "Dark Wood Floor") and refuse unknown ones with suggestions; `place` also accepts movable items
+  (LaundryBasket). Every object name the bridge itself uses resolves.
+- Live (day 13 prison): `floor "Dark Wood Floor" 110 11 111 12` (DLC floor, given by its toolbar name) and
+  `place Plant 112 13` on Dirt; one game minute later all 4 cells read DarkWoodFloor and the Plant was
+  installed (user's screenshot showed both).
+
+Tests: 61 Python tests pass (4 new catalog tests on hand-written data in the game's format).

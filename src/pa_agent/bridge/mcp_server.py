@@ -170,6 +170,18 @@ class Server:
         verb("pa_rules", "rules", "The game's own requirements per room type (minimum size, enclosed/indoor, required "
              "objects, research), read from the installed game. room: one room (kennel, Armoury...); refresh re-reads.",
              {"room": STR}, [], ["room"])
+        verb("pa_catalog", "catalog", "Search everything buildable (base game + DLC floors, walls, objects) from the "
+             "installed game: exact names for pa_place / build, size, cost, research, power/water. query: words, "
+             "optionally starting with floor|wall|object (e.g. \"wood floor\", \"object plant\"); refresh re-reads.",
+             {"query": STR}, [], ["query"])
+        verb("pa_place", "place", "Order one object at a cell: any object from pa_catalog (furniture, decor, DLC items). "
+             "Unknown names are refused with suggestions.", {"object": STR, "x": INT, "y": INT},
+             ["object", "x", "y"], ["object", "x", "y"])
+        verb("pa_floor", "floor", "Lay a floor over a rectangle: any floor from pa_catalog (DarkWoodFloor, MarbleTiles, "
+             "RunningTrack...).", {"material": STR, **RECT}, ["material", *RECT], ["material", *RECT])
+        verb("pa_wall", "wall", "A straight line of wall/fence, or a rectangle's outline: any wall from pa_catalog "
+             "(BrickWall, GlassWall, BambooFence...). Whole rooms: pa_room.", {"material": STR, **RECT},
+             ["material", *RECT], ["material", *RECT])
         verb("pa_hire", "hire", "Hire staff: Guard, Cook, Workman, Warden (always); Doctor, Janitor, Gardener, Foreman, "
              "Chief, Accountant, Psychologist, Lawyer, DogHandler, ArmedGuard after research. Costs the game's price.",
              {"type": STR, "count": INT}, ["type"], ["type", "count"])
